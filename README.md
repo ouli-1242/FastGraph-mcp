@@ -47,11 +47,55 @@ python -m pip install -e .        # 或 python -m pip install .
 
 ## MCP 配置
 
-### 参数说明（先读这条）
+### 零配置：打开任意项目直接使用（推荐）
+
+FastGraph 已全局安装（`pip install -e .`），且 `--root` 可缺省。配置里**不写 `--root`、不写 `cwd`**，MCP 客户端会在你当前打开的项目目录启动 server，FastGraph 自动索引该项目：
 
 ```
---root <path>  要【被索引】的项目目录。FastGraph 扫描并分析的是这里的代码。
-cwd            FastGraph 仓库自身的目录（保证 `import fastgraph` 能成功）。
+--root 缺省 = 从启动目录向上找最近的 git 根（有 .git 即视为仓库边界）
+             非 git 目录 → 直接用启动目录本身
+```
+
+任何时候装好一次、配好一次，之后打开任何项目文件夹即开即用，无需每项目改配置。
+
+### Claude Code（零配置）
+
+在 `claude mcp add` 或项目 `.mcp.json` 中：
+
+```json
+{
+  "mcpServers": {
+    "fastgraph": {
+      "command": "python",
+      "args": ["-m", "fastgraph"]
+    }
+  }
+}
+```
+
+### OpenCode（零配置）
+
+```json
+{
+  "mcp": {
+    "fastgraph": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "fastgraph"]
+    }
+  }
+}
+```
+
+> 零配置依赖"客户端从当前项目目录启动 server"。Claude Code / OpenCode 均满足此行为。若客户端未满足（进程 cwd 固定），回退到下面的显式 `--root` 写法。
+
+### 手动指定项目：`--root`
+
+需要固定分析某个目录时（例如 IDE 启动目录与目标项目不同），用 `--root`：
+
+```
+--root <path>  要【被索引】的项目目录（显式指定时不做自动探测，全部用该路径）
+cwd            FastGraph 仓库自身的目录（保证 `import fastgraph` 能成功）
 ```
 
 ⚠️ 两个路径**完全不同**：`--root` 指向你要分析的项目，`cwd` 指向 FastGraph 本身。把两者填成同一个目录是最常见的错误（结果：FastGraph 把自己的源码当成索引对象）。
@@ -60,10 +104,9 @@ cwd            FastGraph 仓库自身的目录（保证 `import fastgraph` 能�
 
 | 项 | 值 | 说明 |
 | --- | --- | --- |
-| `command` / `args` | `python -m fastgraph --root <项目路径>` | FastGraph 已安装（`pip install -e .`）时，任何目录都可运行 |
-| `cwd` | 本仓库路径 | 未安装时兜底：在该目录下可 `import fastgraph`。已安装可省略 |
-| `--root` 缺省 | 默认 `Path.cwd()` | 不传时用 cwd 作为索引对象——**不要依赖这个默认值**，永远显式传 `--root` |
-| 每项目一个实例 | 一次只能挂载一个 `--root` | 需要分析多个项目，就复制整段配置为多个 MCP server（每个指定不同项目名与 `--root`） |
+| `command` / `args` | `python -m fastgraph --root <项目路径>` | 仅需固定项目时写 `--root`；零配置模式不写 |
+| `cwd` | 本仓库路径 | 仅未安装时兜底；已安装可省略 |
+| 每项目一个实例 | 一次只能挂载一个 `--root` | 需要同时分析多个项目，复制配置为多个 MCP server（每个指定不同项目名与 `--root`） |
 
 ### Windows 路径写法
 
@@ -85,67 +128,20 @@ python -m pip install -e .        # 目的：命令行（含 MCP 配置中的 co
 - Windows 注意：**不要用微软商店的 `python` 别名**（py 启动器），MCP 配置里的 `command` 用 `python` 时要确认它是真实解释器（`where python` 验证）
 - 本仓库已按 editable 方式安装（`pip install -e .`）：`python -m fastgraph` 指向本仓库源码，**改代码即时生效，无需重装**
 
-### Claude Code
-
-`~/.claude.json` 或项目的 `.mcp.json`：
-
-```json
-{
-  "mcpServers": {
-    "fastgraph": {
-      "command": "python",
-      "args": ["-m", "fastgraph", "--root", "/path/to/project"],
-      "cwd": "/path/to/fastgraph-repo"
-    }
-  }
-}
-```
-
-Windows：
-
-```json
-{
-  "mcpServers": {
-    "fastgraph": {
-      "command": "python",
-      "args": ["-m", "fastgraph", "--root", "D:/work/my-project"],
-      "cwd": "D:/tools/FastGraph-mcp"
-    }
-  }
-}
-```
-
-### OpenCode
-
-`opencode.json`：
-
-```json
-{
-  "mcp": {
-    "fastgraph": {
-      "type": "stdio",
-      "command": "python",
-      "args": ["-m", "fastgraph", "--root", "/path/to/project"],
-      "cwd": "/path/to/fastgraph-repo"
-    }
-  }
-}
-```
-
 ### 其他客户端（通用 stdio 规则）
 
-上方范例是 Claude Code / OpenCode 的字段命名；其余客户端（Cursor、Zed、VS Code 的 MCP 插件等）同样遵循：
+上方范例是 Claude Code / OpenCode 的字段命名；任何支持 stdio MCP 的客户端（Cursor、Zed、VS Code 的 MCP 插件等）都同理：
 
-- MCP stdio server 的 `command` + `args` 就是 `python -m fastgraph --root <项目>`，外加可选 `cwd`
-- 客户端要求 `cwd` 时必须填 FastGraph 仓库路径；不要求时可不填（前提：已 `pip install -e .`）
+- **推荐零配置**：`command: python` + `args: ["-m", "fastgraph"]`——客户端从打开的目录启动 server 即自动索引
+- 客户端强制要求 `cwd` 时填 FastGraph 仓库路径（前提：仓库目录已克隆到本地）；需要 `--root` 时按"手动指定项目"一节填写
 - 配置后建议跑一次任意工具（如 `project_overview`）确认 stdout 是 MCP 协议而非报错
 
 ### 常见问题
 
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
-| 启动即失败 / 工具不可见 | 未安装或 `cwd` 错误导致 import 失败 | 先在仓库目录跑 `python -m fastgraph --root <项目>` 验证；报错多半是缺 `mcp`/`tree-sitter` 依赖 |
-| 索引了整个 FastGraph 仓库自身 | cwd 缺省被当作 root | 显式传 `--root 目标项目路径` |
+| 工具不可见 / 启动失败 | 未安装，或 `cwd` 指向无法 import 的目录，或 `python` 是微软商店别名 | 仓库目录跑 `python -m fastgraph` 验证；报错多半缺 `mcp` / `tree-sitter` 依赖；用 `where python` 确认真实解释器 |
+| 索引了错误目录（如 FastGraph 仓库自己） | `--root` / `cwd` 填成了同一个路径；或零配置下启动目录非预期 | 手动指定 `--root 目标项目`；或检查客户端启动目录 |
 | 改了代码但查询结果旧 | 增量刷新未触发（如文件被 git 操作替换） | 删除目标项目下 `.fastgraph/index.sqlite`，下次调用自动重建 |
 | 首个工具调用慢（数秒~十几秒） | 首次全量索引 | 正常；之后增量 <100ms |
 
