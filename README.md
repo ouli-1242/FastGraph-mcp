@@ -45,9 +45,49 @@ python -m pip install -e .        # 或 python -m pip install .
 - 之后每次工具调用前做**懒增量刷新**：mtime+size 比对，只重解析真正变化的文件
 - 索引存放在项目下 `.fastgraph/index.sqlite`（自动忽略，不污染 git）
 
+## MCP 配置
+
+### 参数说明（先读这条）
+
+```
+--root <path>  要【被索引】的项目目录。FastGraph 扫描并分析的是这里的代码。
+cwd            FastGraph 仓库自身的目录（保证 `import fastgraph` 能成功）。
+```
+
+⚠️ 两个路径**完全不同**：`--root` 指向你要分析的项目，`cwd` 指向 FastGraph 本身。把两者填成同一个目录是最常见的错误（结果：FastGraph 把自己的源码当成索引对象）。
+
+约定：
+
+| 项 | 值 | 说明 |
+| --- | --- | --- |
+| `command` / `args` | `python -m fastgraph --root <项目路径>` | FastGraph 已安装（`pip install -e .`）时，任何目录都可运行 |
+| `cwd` | 本仓库路径 | 未安装时兜底：在该目录下可 `import fastgraph`。已安装可省略 |
+| `--root` 缺省 | 默认 `Path.cwd()` | 不传时用 cwd 作为索引对象——**不要依赖这个默认值**，永远显式传 `--root` |
+| 每项目一个实例 | 一次只能挂载一个 `--root` | 需要分析多个项目，就复制整段配置为多个 MCP server（每个指定不同项目名与 `--root`） |
+
+### Windows 路径写法
+
+JSON 里反斜杠必须转义（`D:\\work\\my-project`），手写容易错。**推荐写成正斜杠，Windows 完全兼容**：
+
+```json
+"args": ["-m", "fastgraph", "--root", "D:/work/my-project"]
+```
+
+### 安装（可选，推荐）
+
+```bash
+cd /path/to/FastGraph-mcp
+python -m pip install -e .        # 目的：命令行（含 MCP 配置中的 command）不必依赖 cwd
+```
+
+- 安装后 `python -m fastgraph` 在任何目录可用，MCP 配置里 `cwd` 可不写
+- 用虚拟环境时，把 `command` 换成 venv 的 python 绝对路径（如 `D:/tools/FastGraph-mcp/.venv/Scripts/python.exe`），避免全局 Python 找不到依赖
+- Windows 注意：**不要用微软商店的 `python` 别名**（py 启动器），MCP 配置里的 `command` 用 `python` 时要确认它是真实解释器（`where python` 验证）
+- 本仓库已按 editable 方式安装（`pip install -e .`）：`python -m fastgraph` 指向本仓库源码，**改代码即时生效，无需重装**
+
 ### Claude Code
 
-`cwd` 填克隆本仓库的路径：
+`~/.claude.json` 或项目的 `.mcp.json`：
 
 ```json
 {
@@ -61,7 +101,23 @@ python -m pip install -e .        # 或 python -m pip install .
 }
 ```
 
+Windows：
+
+```json
+{
+  "mcpServers": {
+    "fastgraph": {
+      "command": "python",
+      "args": ["-m", "fastgraph", "--root", "D:/work/my-project"],
+      "cwd": "D:/tools/FastGraph-mcp"
+    }
+  }
+}
+```
+
 ### OpenCode
+
+`opencode.json`：
 
 ```json
 {
@@ -75,6 +131,23 @@ python -m pip install -e .        # 或 python -m pip install .
   }
 }
 ```
+
+### 其他客户端（通用 stdio 规则）
+
+上方范例是 Claude Code / OpenCode 的字段命名；其余客户端（Cursor、Zed、VS Code 的 MCP 插件等）同样遵循：
+
+- MCP stdio server 的 `command` + `args` 就是 `python -m fastgraph --root <项目>`，外加可选 `cwd`
+- 客户端要求 `cwd` 时必须填 FastGraph 仓库路径；不要求时可不填（前提：已 `pip install -e .`）
+- 配置后建议跑一次任意工具（如 `project_overview`）确认 stdout 是 MCP 协议而非报错
+
+### 常见问题
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| 启动即失败 / 工具不可见 | 未安装或 `cwd` 错误导致 import 失败 | 先在仓库目录跑 `python -m fastgraph --root <项目>` 验证；报错多半是缺 `mcp`/`tree-sitter` 依赖 |
+| 索引了整个 FastGraph 仓库自身 | cwd 缺省被当作 root | 显式传 `--root 目标项目路径` |
+| 改了代码但查询结果旧 | 增量刷新未触发（如文件被 git 操作替换） | 删除目标项目下 `.fastgraph/index.sqlite`，下次调用自动重建 |
+| 首个工具调用慢（数秒~十几秒） | 首次全量索引 | 正常；之后增量 <100ms |
 
 ## MCP 工具（12 个）
 
