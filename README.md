@@ -52,9 +52,9 @@ OpenCode（`opencode.json`）：
 {
   "mcp": {
     "fastgraph": {
-      "type": "stdio",
-      "command": "python",
-      "args": ["-m", "fastgraph"]
+      "type": "local",
+      "enabled": true,
+      "command": ["python", "-m", "fastgraph"]
     }
   }
 }
@@ -70,11 +70,13 @@ OpenCode（`opencode.json`）：
 
 `--root` 缺省时自动探测项目根：从启动目录向上找最近的 git 根（有 `.git` 即视为仓库边界）；非 git 目录用启动目录本身。
 
-| 需求 | 写法 | 说明 |
+| 需求 | 命令行 | 说明 |
 | --- | --- | --- |
-| 打开哪个项目就用哪个（推荐） | `args: ["-m", "fastgraph"]` | 客户端从当前项目目录启动 server |
-| 固定分析某个目录 | `args: ["-m", "fastgraph", "--root", "D:/work/my-project"]` | `--root` 显式指定后不做自动探测 |
+| 打开哪个项目就用哪个（推荐） | `python -m fastgraph` | 客户端从当前项目目录启动 server |
+| 固定分析某个目录 | `python -m fastgraph --root D:/work/my-project` | `--root` 显式指定后不做自动探测 |
 | 同时分析多个项目 | 复制整段配置，每个用不同名字 + `--root` | 一次只能挂一个实例 |
+
+> 命令行放入客户端配置的写法随客户端而异：Claude Code 拆成 `command` + `args` 数组（见上方快速开始）；OpenCode 把整条命令行放进 `command` 数组（如 `["python", "-m", "fastgraph", "--root", "D:/work/my-project"]`）、`type` 用 `"local"`、并需 `enabled: true`。
 
 > ⚠️ 两个路径**完全不同**：`--root` 是要被索引的**目标项目**；`cwd` 是 **FastGraph 仓库自身**（未安装时兜底 import）。最容易犯的错：把两者填成同一个目录，结果把 FastGraph 源码当成了索引对象——已安装时 `cwd` 可省略。
 
@@ -83,7 +85,7 @@ OpenCode（`opencode.json`）：
 - **venv**：用虚拟环境时把 `command` 换成 venv 的 python 绝对路径（如 `D:/tools/FastGraph-mcp/.venv/Scripts/python.exe`）
 - **Windows `python` 别名**：不要用微软商店安装的 `python` 别名（py 启动器）；用 `where python` 确认真实解释器
 - **Windows 路径**：JSON 里反斜杠要转义（`"D:\\work\\my-project"`），推荐写正斜杠 `"D:/work/my-project"`，完全兼容
-- **非 Claude Code / OpenCode**（Cursor、Zed、VS Code MCP 插件等）：同样支持 stdio，配置结构相同，按上表零配置 / `--root` 两种写法套用即可
+- **非 Claude Code / OpenCode**（Cursor、Zed、VS Code MCP 插件等）：同是 stdio MCP，但字段命名按各自 schema（有的拆 `command`+`args`，有的用整条命令数组），套用上表命令行即可
 - 配置后建议跑一次任意工具（如 `project_overview`），确认 stdout 是 MCP 协议而非报错
 
 ## 工具速查（12 个）
