@@ -67,6 +67,8 @@ def resolve_root(start: Path) -> Path:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from os import getenv
+
     parser = argparse.ArgumentParser(
         prog="fastgraph",
         description="FastGraph-MCP stdio server (default root: auto-detected from cwd)",
@@ -75,11 +77,18 @@ def main(argv: list[str] | None = None) -> int:
         "--root",
         type=Path,
         default=None,
-        help="project root to index (default: nearest git root above cwd, or cwd)",
+        help="project root to index (default: $FASTGRAPH_ROOT, else nearest git root above cwd, else cwd)",
     )
     args = parser.parse_args(argv)
 
-    root = resolve_root(args.root or Path.cwd())
+    explicit = args.root or (
+        Path(getenv("FASTGRAPH_ROOT")) if getenv("FASTGRAPH_ROOT") else None
+    )
+    root = (
+        explicit.resolve()
+        if explicit is not None
+        else resolve_root(Path.cwd())
+    )
     if not root.is_dir():
         print(f"error: {root} is not a directory", file=sys.stderr)
         return 1
