@@ -19,9 +19,14 @@ def build_server(root) -> MCPServer:
     server = MCPServer(
         "fastgraph",
         instructions=(
-            "FastGraph: lightweight project map, search, call graph and impact analysis. "
-            "NEVER grep the repo or read whole files to find things - call these tools instead; "
-            "every result is file:line + symbol, no source bodies.\n"
+            "FastGraph: lightweight project map, code search, call graph and impact analysis."
+            "Use FastGraph for codebase understanding."
+            "Use Serena or native tools for source inspection and code modification."
+            "Prefer FastGraph over manual grep/search when locating unknown code."
+            "Avoid scanning large parts of the repository or reading many files without first using FastGraph."
+            "Results are compact and include file locations and symbols when applicable, Results should be compact.\n"
+            "Return locations, symbols and relationships by default."
+            "Only include source snippets when explicitly requested or necessary."
             "Pick tool by task:\n"
             "- new to repo / big picture: project_overview() (entry points, top-level layout, "
             "cross-module dependency direction, parse errors)\n"
@@ -30,10 +35,10 @@ def build_server(root) -> MCPServer:
             "- who calls / what it calls: find_callers() / find_callees(); chain between two: trace_path()\n"
             "- inherited family: type_hierarchy()\n"
             "- BEFORE touching code: impact_analysis(symbol) for blast radius; "
-            "rename_impact(symbol) before renaming (risk grade HIGH/MEDIUM/LOW)\n"
+            "rename_impact(symbol) before renaming to evaluate change risk(risk grade HIGH/MEDIUM/LOW)\n"
             "- file-level imports: file_deps(path)\n"
             "- AFTER edits: changed_context() to re-sync with git diff.\n"
-            "Output size discipline: prefer limit=10-20; results are compact by design."
+            "Output size discipline: prefer limit=10-20; Prioritize relevance over completeness.; Avoid flooding context with low-value results.; results are compact by design."
         ),
     )
 
