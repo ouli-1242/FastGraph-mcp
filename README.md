@@ -14,7 +14,7 @@ FastGraph-MCP 是一个轻量级代码智能 MCP 服务器，补充 Serena 等�
 
 - [快速开始（5 分钟）](#快速开始5-分钟)
 - [MCP 配置](#mcp-配置)
-- [工具速查（12 个）](#工具速查12-个)
+- [工具速查（13 个）](#工具速查13-个)
 - [与 Serena 分工](#与-serena-分工)
 - [支持语言](#支持语言)
 - [开发](#开发)
@@ -64,6 +64,8 @@ OpenCode（`opencode.json`）：
 
 打开任何项目即可调用工具（如 `project_overview` 看全貌）。首次调用自动建索引，之后增量更新。
 
+桌面客户端（Claude Desktop 等）见下方 [MCP 配置](#mcp-配置)：先调 `activate_project(root="项目路径")` 会话内激活当前文件夹。
+
 ## MCP 配置
 
 ### 零配置（推荐，默认模式）
@@ -93,7 +95,7 @@ OpenCode（`opencode.json`）：
 - **非 Claude Code / OpenCode**（Cursor、Zed、VS Code MCP 插件等）：同是 stdio MCP，但字段命名按各自 schema（有的拆 `command`+`args`，有的用整条命令数组），套用上表命令行即可
 - 配置后建议跑一次任意工具（如 `project_overview`），确认 stdout 是 MCP 协议而非报错
 
-## 工具速查（12 个）
+## 工具速查（13 个）
 
 按任务选工具：
 
@@ -137,7 +139,7 @@ FastGraph 不做 LSP / rename / edit / refactor（那是 Serena 的职责）；S
 
 - 无 embedding、无 vector store（对比 CocoIndex/Vera：不跑模型）
 - 无图数据库、无 docker 服务（对比 CodeGraphContext 的 docker-compose）
-- 仅 12 个工具、输出极小（对比 CodeGraph 45 个工具 + 大输出）
+- 仅 13 个工具、输出极小（对比 CodeGraph 45 个工具 + 大输出）
 - 增量秒级，无全量重索引（对比常见 RAG 的更新成本）
 
 ## 索引机制

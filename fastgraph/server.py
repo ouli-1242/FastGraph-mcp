@@ -1,4 +1,4 @@
-"""FastGraph-MCP server: 8-tool surface over SQLite graph."""
+"""FastGraph-MCP server: 13-tool surface over SQLite graph."""
 
 from __future__ import annotations
 

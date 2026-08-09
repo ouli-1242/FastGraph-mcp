@@ -1,4 +1,4 @@
-"""MCP tool implementations (the 8-tool surface)."""
+"""MCP tool implementations (the 13-tool surface)."""
 
 from __future__ import annotations
 
