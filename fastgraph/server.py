@@ -48,34 +48,34 @@ def build_server(root) -> MCPServer:
         return tools.code_search(query, limit=limit, kind=kind, root=root)
 
     @server.tool()
-    def symbol_info(symbol: str) -> dict:
-        """Details for a symbol by name or qualified name (A.B.foo): file, lines, signature, doc, callees."""
-        return tools.symbol_info(symbol)
+    def symbol_info(symbol: str, root: str | None = None) -> dict:
+        """Details for a symbol by name or qualified name (A.B.foo): file, lines, signature, doc, callees. Optional root=<absolute path> for another project (desktop clients)."""
+        return tools.symbol_info(symbol, root=root)
 
     @server.tool()
-    def find_callers(symbol: str, limit: int = 30, depth: int = 1) -> dict:
-        """Who calls this symbol. depth=2+ for transitive callers (who calls the callers)."""
-        return tools.find_callers(symbol, limit=limit, depth=depth)
+    def find_callers(symbol: str, limit: int = 30, depth: int = 1, root: str | None = None) -> dict:
+        """Who calls this symbol. depth=2+ for transitive callers. Optional root=<absolute path> for another project (desktop clients)."""
+        return tools.find_callers(symbol, limit=limit, depth=depth, root=root)
 
     @server.tool()
-    def find_callees(symbol: str, limit: int = 50, depth: int = 1) -> dict:
-        """What this symbol calls. depth=2+ for the full downstream call tree."""
-        return tools.find_callees(symbol, limit=limit, depth=depth)
+    def find_callees(symbol: str, limit: int = 50, depth: int = 1, root: str | None = None) -> dict:
+        """What this symbol calls. depth=2+ for the full downstream call tree. Optional root=<absolute path> for another project (desktop clients)."""
+        return tools.find_callees(symbol, limit=limit, depth=depth, root=root)
 
     @server.tool()
-    def trace_path(from_symbol: str, to_symbol: str | None = None, depth: int = 3) -> dict:
-        """Call chain between two symbols; without to_symbol returns the up-chain of callers."""
-        return tools.trace_path(from_symbol, to_symbol, depth=depth)
+    def trace_path(from_symbol: str, to_symbol: str | None = None, depth: int = 3, root: str | None = None) -> dict:
+        """Call chain between two symbols; without to_symbol returns the up-chain of callers. Optional root=<absolute path> for another project (desktop clients)."""
+        return tools.trace_path(from_symbol, to_symbol, depth=depth, root=root)
 
     @server.tool()
-    def impact_analysis(symbol: str, max_depth: int = 2, limit: int = 40) -> dict:
-        """MUST call before editing: reverse-BFS blast radius. HIGH=direct callers, MEDIUM=indirect, tests separated."""
-        return tools.impact_analysis(symbol, max_depth=max_depth, limit=limit)
+    def impact_analysis(symbol: str, max_depth: int = 2, limit: int = 40, root: str | None = None) -> dict:
+        """MUST call before editing: reverse-BFS blast radius. HIGH=direct callers, MEDIUM=indirect, tests separated. Optional root=<absolute path> for another project (desktop clients)."""
+        return tools.impact_analysis(symbol, max_depth=max_depth, limit=limit, root=root)
 
     @server.tool()
-    def changed_context(limit: int = 50) -> dict:
-        """Call after edits: git diff -> changed symbols -> affected callers. Syncs your changes to the index."""
-        return tools.changed_context(limit=limit)
+    def changed_context(limit: int = 50, root: str | None = None) -> dict:
+        """Call after edits: git diff -> changed symbols -> affected callers. Syncs your changes to the index. Optional root=<absolute path> for another project (desktop clients)."""
+        return tools.changed_context(limit=limit, root=root)
 
     @server.tool()
     def project_overview(root: str | None = None) -> dict:
@@ -83,24 +83,24 @@ def build_server(root) -> MCPServer:
         return tools.project_overview(root=root)
 
     @server.tool()
-    def file_symbols(path: str, limit: int = 200) -> dict:
-        """All symbols in one file (line ranges, kinds, signatures). Read this instead of the whole file when possible."""
-        return tools.file_symbols(path, limit=limit)
+    def file_symbols(path: str, limit: int = 200, root: str | None = None) -> dict:
+        """All symbols in one file (line ranges, kinds, signatures). Read this instead of the whole file when possible. Optional root=<absolute path> for another project (desktop clients)."""
+        return tools.file_symbols(path, limit=limit, root=root)
 
     @server.tool()
-    def file_deps(path: str) -> dict:
-        """What a file imports and which files import it. Check before changing imports or module structure."""
-        return tools.file_deps(path)
+    def file_deps(path: str, root: str | None = None) -> dict:
+        """What a file imports and which files import it. Check before changing imports or module structure. Optional root=<absolute path> for another project (desktop clients)."""
+        return tools.file_deps(path, root=root)
 
     @server.tool()
-    def rename_impact(symbol: str, limit: int = 100) -> dict:
-        """Call BEFORE renaming: all definitions + reference sites with HIGH/MEDIUM/LOW risk grade (public API, test sites)."""
-        return tools.rename_impact(symbol, limit=limit)
+    def rename_impact(symbol: str, limit: int = 100, root: str | None = None) -> dict:
+        """Call BEFORE renaming: all definitions + reference sites with HIGH/MEDIUM/LOW risk grade (public API, test sites). Optional root=<absolute path> for another project (desktop clients)."""
+        return tools.rename_impact(symbol, limit=limit, root=root)
 
     @server.tool()
-    def type_hierarchy(symbol: str) -> dict:
-        """Class inheritance: ancestors (bases) and descendants (subclasses). Check before editing a base class."""
-        return tools.type_hierarchy(symbol)
+    def type_hierarchy(symbol: str, root: str | None = None) -> dict:
+        """Class inheritance: ancestors (bases) and descendants (subclasses). Check before editing a base class. Optional root=<absolute path> for another project (desktop clients)."""
+        return tools.type_hierarchy(symbol, root=root)
 
     return server
 

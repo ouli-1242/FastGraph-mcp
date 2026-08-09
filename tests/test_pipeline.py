@@ -261,3 +261,42 @@ def test_optional_root_param(toolbox):
 
     ov = toolbox.project_overview(root=str(WORK))
     assert ov["root"] == str(WORK)
+
+
+def test_optional_root_all_tools(toolbox):
+    """Every tool honors root= and falls back to the default root."""
+    other = WORK.parent / "other_work2"
+    write(other / "auth/service.py", '''\
+"""Auth service."""
+class BaseService:
+    pass
+
+
+def login():
+    return "ok"
+''')
+    try:
+        results = {}
+        results["symbol_info"] = toolbox.symbol_info("BaseService", root=str(other))
+        results["find_callees"] = toolbox.find_callees("login", root=str(other))
+        results["impact_analysis"] = toolbox.impact_analysis("login", root=str(other))
+        results["file_symbols"] = toolbox.file_symbols("auth/service.py", root=str(other))
+        results["file_deps"] = toolbox.file_deps("auth/service.py", root=str(other))
+        results["rename_impact"] = toolbox.rename_impact("login", root=str(other))
+        results["type_hierarchy"] = toolbox.type_hierarchy("BaseService", root=str(other))
+        for name, res in results.items():
+            assert res["root"] == str(other.resolve()), name
+
+        assert results["impact_analysis"]["root"] == str(other.resolve())
+        # default root unchanged
+        assert toolbox.find_callers("login")["root"] == str(WORK)
+    finally:
+        _rmtree(other)
+
+
+def test_optional_root_invalid(toolbox):
+    try:
+        toolbox.code_search("x", root=str(WORK.parent / "does_not_exist"))
+        raise AssertionError("expected ValueError for missing root dir")
+    except ValueError:
+        pass
