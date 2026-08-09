@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections import deque
 
 from fastgraph.db import DB
@@ -239,6 +240,74 @@ def _impact_brief(info: dict) -> dict:
     }
 
 
+_IMP_RE = re.compile(r"(?:from\s+|import\s*\{[^}]+\}\s*from\s*|import\s+|require\(|using\s+)(['\"]?)([\w./@~-]+)", re.IGNORECASE)
+
+
+def file_symbols(db: DB, path: str, limit: int = 200) -> list[dict]:
+    """All indexed symbols declared in one file, in source order."""
+    rows = db.conn.execute(
+        """SELECT s.id, s.name, s.kind, s.qualified_name, s.signature,
+                  s.start_line, s.end_line, f.path
+           FROM symbols s JOIN files f ON f.id = s.file_id
+           WHERE f.path = ? ORDER BY s.start_line, s.start_col LIMIT ?""",
+        (path, limit),
+    ).fetchall()
+    return [
+        {"id": r[0], "symbol": r[1], "kind": r[2], "qualified_name": r[3],
+         "signature": (r[4] or "")[:120], "lines": f"{r[5]}-{r[6]}", "file": r[7]}
+        for r in rows
+    ]
+
+
+def import_targets(db: DB, import_text: str, import_file: str) -> list[str]:
+    """Guess which indexed files an import statement refers to."""
+    m = _IMP_RE.search(import_text)
+    if not m:
+        return []
+    mod = m.group(2)
+    if mod.startswith((".", "/")):
+        rel = mod[1:] if mod.startswith(".") else mod
+        mod = rel.replace("/", ".")
+    else:
+        mod = mod.replace("/", ".")
+    mod = mod.strip(".")
+    dir_part = "/".join(import_file.split("/")[:-1])
+    rel_root = f"{dir_part}/" if dir_part else ""
+    candidates: list[str] = []
+    for (p,) in db.conn.execute("SELECT path FROM files"):
+        stem = p.rsplit(".", 1)[0].replace("/", ".").lower()
+        if stem == mod or stem.endswith("." + mod):
+            candidates.append(p)
+        elif mod.startswith(".") and p.lower() == rel_root + mod[1:] + ".__init__":
+            candidates.append(p)
+    return candidates[:5]
+
+
+def module_dependencies(db: DB, path: str) -> dict:
+    """File-level import view: what a file imports, and who imports it."""
+    fid = db.get_file_id(path)
+    if fid is None:
+        return {"found": False}
+    imports: list[dict] = []
+    for text, line in db.conn.execute(
+        "SELECT text, line FROM file_imports WHERE file_id = ? ORDER BY line", (fid,)
+    ):
+        imports.append({"text": text[:120], "line": line, "resolves_to": import_targets(db, text, path)})
+
+    stem = path.rsplit(".", 1)[0].replace("/", ".").lower()
+    importers: list[dict] = []
+    for (fid2, p) in db.conn.execute("SELECT id, path FROM files WHERE id != ?", (fid,)):
+        for text, line in db.conn.execute(
+            "SELECT text, line FROM file_imports WHERE file_id=?", (fid2,)
+        ):
+            for t in import_targets(db, text, p):
+                tstem = t.rsplit(".", 1)[0].replace("/", ".").lower()
+                if tstem == stem or tstem.endswith("." + stem):
+                    importers.append({"file": p, "line": line, "import": text[:120]})
+                    break
+    return {"found": True, "imports": imports[:30], "importers": importers[:30]}
+
+
 def project_overview(db: DB) -> dict:
     files = db.conn.execute(
         "SELECT path, language FROM files ORDER BY path"
@@ -257,4 +326,126 @@ def project_overview(db: DB) -> dict:
                 "WHERE instr(path, '/') > 0 GROUP BY 1 ORDER BY 2 DESC LIMIT 15"
             )
         },
+        "parse_errors": [e["file"] for e in db.parse_errors(limit=50)],
+    }
+
+
+def rename_impact(db: DB, name: str, limit: int = 100) -> dict:
+    """Every definition + every reference of a symbol, for rename preview.
+
+    Uses both resolved relations (calls/inherits) and raw import text.
+    """
+    defs = find_symbols(db, name)
+    refs: list[dict] = []
+    if defs:
+        # 1) references resolved via relations (callers/inheritors)
+        for r in db.conn.execute(
+            """SELECT s.name, f.path, r.line, r.rtype, r.target
+               FROM relations r JOIN symbols s ON s.id = r.source_id
+               JOIN files f ON f.id = s.file_id
+               WHERE r.target_id IN (%s) OR r.target = ?
+               ORDER BY f.path, r.line LIMIT ?"""
+            % ",".join("?" * len(defs)),
+            tuple(d["id"] for d in defs) + (name, limit),
+        ):
+            refs.append({"symbol": r[0], "file": r[1], "line": r[2], "rtype": r[3], "via_text": r[4][:60]})
+
+        # 1b) unresolved same-name call targets (e.g. super().login), only for
+        #     qualified requests, so bare-name renames don't explode
+        if "." in name:
+            short = name.rsplit(".", 1)[-1]
+            for r in db.conn.execute(
+                """SELECT s.name, f.path, r.line, r.rtype, r.target
+                   FROM relations r JOIN symbols s ON s.id = r.source_id
+                   JOIN files f ON f.id = s.file_id
+                   WHERE r.rtype = 'calls' AND r.target_id IS NULL AND r.target = ?
+                   ORDER BY f.path, r.line LIMIT ?""",
+                (short, limit),
+            ):
+                refs.append({"symbol": r[0], "file": r[1], "line": r[2], "rtype": r[3], "via_text": r[4][:60]})
+
+        # 2) raw text occurrences in other files' symbols (docstrings, qualified uses)
+        for r in db.conn.execute(
+            """SELECT s.name, s.kind, s.qualified_name, s.start_line, f.path
+               FROM symbols s JOIN files f ON f.id = s.file_id
+               WHERE s.name != ? AND s.qualified_name LIKE ?
+               ORDER BY f.path, s.start_line LIMIT ?""",
+            (name, f"%.{name}", limit),
+        ):
+            refs.append({"symbol": r[0], "file": r[4], "line": r[3], "rtype": "uses", "via": r[2][:60]})
+
+    return {
+        "symbol": name,
+        "definitions": [_brief(s) for s in defs],
+        "references": refs[:limit],
+        "definition_count": len(defs),
+        "reference_count": len(refs),
+    }
+
+
+def _brief(sym: dict) -> dict:
+    return {
+        "symbol": sym.get("name"),
+        "qualified_name": sym.get("qualified_name"),
+        "kind": sym.get("kind"),
+        "file": sym.get("path"),
+        "lines": f"{sym.get('start_line')}-{sym.get('end_line')}" if sym.get("end_line") else f"{sym.get('start_line')}",
+        "signature": (sym.get("signature") or "")[:120],
+    }
+
+
+def type_hierarchy(db: DB, name: str) -> dict:
+    """Class hierarchy: ancestors (bases) and descendants (subclasses), BFS."""
+    roots = find_symbols(db, name)
+    if not roots:
+        return {"symbol": name, "found": False}
+
+    def ancestors_of(sid: int) -> list[dict]:
+        out: list[dict] = []
+        frontier = {sid}
+        seen = set(frontier)
+        for _ in range(6):
+            nxt: set[int] = set()
+            for cid in frontier:
+                for r in db.conn.execute(
+                    """SELECT s.id FROM relations r JOIN symbols s ON s.id = r.target_id
+                       WHERE r.rtype = 'inherits' AND r.source_id = ? AND r.target_id IS NOT NULL""",
+                    (cid,),
+                ):
+                    if r[0] not in seen:
+                        seen.add(r[0])
+                        nxt.add(r[0])
+            if not nxt:
+                break
+            out.extend(symbol_by_id(db, i) for i in nxt)
+            frontier = nxt
+        return out
+
+    def descendants_of(sid: int) -> list[dict]:
+        out: list[dict] = []
+        frontier = {sid}
+        seen = set()
+        for _ in range(6):
+            nxt: set[int] = set()
+            for cid in frontier:
+                for r in db.conn.execute(
+                    """SELECT DISTINCT r.source_id FROM relations r
+                       WHERE r.rtype = 'inherits' AND r.target_id = ?""",
+                    (cid,),
+                ):
+                    if r[0] not in seen:
+                        seen.add(r[0])
+                        nxt.add(r[0])
+            if not nxt:
+                break
+            out.extend(symbol_by_id(db, i) for i in nxt)
+            frontier = nxt
+        return out
+
+    return {
+        "symbol": name,
+        "found": True,
+        "matches": len(roots),
+        "ancestors": [_brief(s) for s in ancestors_of(roots[0]["id"])][:50],
+        "descendants": [_brief(s) for s in descendants_of(roots[0]["id"])][:50],
     }

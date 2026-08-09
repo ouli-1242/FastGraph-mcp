@@ -27,7 +27,10 @@ def build_sample(root: Path):
     write(toplevel / "auth/service.py", '''"""Auth service."""
 from user.repo import UserRepository
 
-class AuthService:
+class BaseService:
+    pass
+
+class AuthService(BaseService):
     """Handles login."""
 
     def login(self, username, password):
@@ -37,6 +40,10 @@ class AuthService:
 
     def _create_session(self, username):
         return Session().start(username)
+
+class OAuthService(AuthService):
+    def login(self, username, password):
+        return super().login(username, password)
 ''')
     write(toplevel / "auth/controller.py", '''\
 from auth.service import AuthService
@@ -136,6 +143,40 @@ def test_project_overview(toolbox):
     ov = toolbox.project_overview()
     assert ov["files"] == 6
     assert "python" in ov["languages"]
+    assert "parse_errors" in ov
+
+
+def test_file_symbols(toolbox):
+    syms = toolbox.file_symbols("src/auth/service.py")["symbols"]
+    names = {s["symbol"] for s in syms}
+    assert "AuthService" in names
+    assert "login" in names
+    assert all("lines" in s for s in syms)
+
+
+def test_file_deps(toolbox):
+    deps = toolbox.file_deps("src/auth/service.py")
+    assert deps["found"]
+    assert any("user.repo" in i["text"] for i in deps["imports"])
+    assert any(i["file"] == "src/auth/controller.py" for i in deps["importers"])
+
+
+def test_rename_impact(toolbox):
+    imp = toolbox.rename_impact("AuthService.login")
+    assert imp["definition_count"] == 1
+    assert imp["reference_count"] >= 1
+    files = {r["file"] for r in imp["references"]}
+    assert "src/auth/controller.py" in files  # call site
+    assert "src/auth/service.py" in files     # OAuthService super() usage
+
+
+def test_type_hierarchy(toolbox):
+    hier = toolbox.type_hierarchy("AuthService")
+    assert hier["found"]
+    anc = {a["qualified_name"] for a in hier["ancestors"]}
+    desc = {d["qualified_name"] for d in hier["descendants"]}
+    assert "BaseService" in anc
+    assert "OAuthService" in desc
 
 
 def test_incremental_update(toolbox):
@@ -148,6 +189,14 @@ def test_incremental_update(toolbox):
     # symbol still found, new shape
     info = toolbox.symbol_info("AuthService.login")
     assert info["found"]
+
+
+def test_parse_errors_reported(toolbox):
+    write(WORK / "src/broken.py", "def (\n")
+    stats = toolbox._ensure_fresh()
+    assert stats["errors"] == 1
+    ov = toolbox.project_overview()
+    assert "src/broken.py" in ov["parse_errors"]
 
 
 def test_changed_context_git(toolbox):

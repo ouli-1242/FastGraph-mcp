@@ -169,3 +169,42 @@ class Toolbox:
         overview["refresh"] = refresh
         overview["ms"] = round((time.perf_counter() - t0) * 1000, 1)
         return overview
+
+    # ---------------- Serena 补充工具 ----------------
+
+    def file_symbols(self, path: str, limit: int = 200) -> dict:
+        t0 = time.perf_counter()
+        refresh = self._ensure_fresh()
+        syms = graph.file_symbols(self.db, path, limit=limit)
+        return {
+            "file": path,
+            "symbols": syms,
+            "count": len(syms),
+            "refresh": refresh,
+            "ms": round((time.perf_counter() - t0) * 1000, 1),
+        }
+
+    def file_deps(self, path: str) -> dict:
+        t0 = time.perf_counter()
+        refresh = self._ensure_fresh()
+        deps = graph.module_dependencies(self.db, path)
+        deps["file"] = path
+        deps["refresh"] = refresh
+        deps["ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        return deps
+
+    def rename_impact(self, symbol: str, limit: int = 100) -> dict:
+        t0 = time.perf_counter()
+        refresh = self._ensure_fresh()
+        impact = graph.rename_impact(self.db, symbol, limit=limit)
+        impact["refresh"] = refresh
+        impact["ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        return impact
+
+    def type_hierarchy(self, symbol: str) -> dict:
+        t0 = time.perf_counter()
+        refresh = self._ensure_fresh()
+        hier = graph.type_hierarchy(self.db, symbol)
+        hier["refresh"] = refresh
+        hier["ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        return hier

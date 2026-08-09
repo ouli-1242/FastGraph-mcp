@@ -60,7 +60,7 @@ python -m pip install -e .        # 或 python -m pip install .
 }
 ```
 
-## MCP 工具（8 个）
+## MCP 工具（12 个）
 
 | 工具 | 作用 | 输出 |
 | --- | --- | --- |
@@ -71,7 +71,11 @@ python -m pip install -e .        # 或 python -m pip install .
 | `trace_path(from, to?)` | 调用链（缺省返回向上链条） | 路径符号列表 |
 | `impact_analysis(symbol, max_depth?)` | **核心**：反向 BFS 影响面，HIGH/MEDIUM 分级，测试文件单列 | 风险分组 |
 | `changed_context()` | **Git 感知**：diff → 变更符号 → 受调用者 | 变更快照 + 影响 |
-| `project_overview()` | 项目语言/文件/符号统计 + 顶层布局 | 概览 |
+| `project_overview()` | 项目语言/文件/符号统计 + 顶层布局 + 解析失败文件 | 概览 |
+| `file_symbols(path)` | 单文件全部符号（行号区间/kind/签名），不读正文即可理解文件 | symbol 列表 |
+| `file_deps(path)` | **文件级依赖**：import 了什么、被谁 import | 依赖导出/导入面 |
+| `rename_impact(symbol)` | **改名预览**：所有定义点 + 所有引用点（含 unresolved 裸名调用） | 定义/引用清单 |
+| `type_hierarchy(symbol)` | **继承层级**：祖先类 + 子类（BFS） | 层级列表 |
 
 ## 与 Serena 分工
 
@@ -86,8 +90,18 @@ FastGraph 不实现 LSP / rename / edit / refactor（那是 Serena 的职责）�
 
 - 无 embedding、无 vector store（对比 CocoIndex/Vera：不跑模型）
 - 无图数据库、无 docker 服务（对比 CodeGraphContext 的 docker-compose）
-- 仅 8 个工具、输出极小（对比 CodeGraph 45 个工具 + 大输出）
+- 仅 12 个工具、输出极小（对比 CodeGraph 45 个工具 + 大输出）
 - 增量秒级，无全量重索引（对比常见 RAG 的更新成本）
+
+## 与 Serena 的编排
+
+```
+改名前    rename_impact(symbol)   → 预览影响面，再调 Serena rename_symbol
+理解文件  file_symbols(path)      → 不读正文先看结构
+文件依赖  file_deps(path)         → 改的是 API 还是内部实现
+继承关系  type_hierarchy(symbol)  → 改基类前的族谱风险
+复查      changed_context()       → 改完看 git diff 波及
+```
 
 ## 支持语言
 

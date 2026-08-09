@@ -21,8 +21,10 @@ def build_server(root) -> MCPServer:
         instructions=(
             "FastGraph: code map, search and impact analysis for coding agents. "
             "Use code_search to locate symbols, symbol_info for details, "
-            "find_callers/find_callees for the call graph, impact_analysis before "
-            "editing, changed_context after edits. Never grep the tree yourself."
+            "find_callers/find_callees for the call graph, type_hierarchy for "
+            "inheritance, file_symbols/file_deps to understand a file, "
+            "rename_impact before renaming, impact_analysis before editing, "
+            "changed_context after edits. Never grep the tree yourself."
         ),
     )
 
@@ -63,8 +65,28 @@ def build_server(root) -> MCPServer:
 
     @server.tool()
     def project_overview() -> dict:
-        """Project map: languages, file/symbol counts, top-level layout."""
+        """Project map: languages, file/symbol counts, top-level layout, parse errors."""
         return tools.project_overview()
+
+    @server.tool()
+    def file_symbols(path: str, limit: int = 200) -> dict:
+        """All symbols declared in one file (line ranges, kinds, signatures)."""
+        return tools.file_symbols(path, limit=limit)
+
+    @server.tool()
+    def file_deps(path: str) -> dict:
+        """File-level deps: what `path` imports, and which files import it."""
+        return tools.file_deps(path)
+
+    @server.tool()
+    def rename_impact(symbol: str, limit: int = 100) -> dict:
+        """Rename preview: every definition + reference site of `symbol`."""
+        return tools.rename_impact(symbol, limit=limit)
+
+    @server.tool()
+    def type_hierarchy(symbol: str) -> dict:
+        """Class inheritance: ancestors (bases) and descendants (subclasses)."""
+        return tools.type_hierarchy(symbol)
 
     return server
 

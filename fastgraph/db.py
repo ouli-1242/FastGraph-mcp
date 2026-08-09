@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS file_imports (
 );
 CREATE INDEX IF NOT EXISTS idx_fimp_file ON file_imports(file_id);
 
+CREATE TABLE IF NOT EXISTS parse_errors (
+    path   TEXT PRIMARY KEY,
+    error  TEXT NOT NULL DEFAULT ''
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_symbols USING fts5(
     name, qualified_name, doc, kind, signature,
     file_path,
@@ -104,6 +109,7 @@ class DB:
 
     def delete_file(self, path: str):
         self.conn.execute("DELETE FROM files WHERE path=?", (path,))
+        self.conn.execute("DELETE FROM parse_errors WHERE path=?", (path,))
 
     def file_path(self, file_id: int) -> str | None:
         r = self.conn.execute("SELECT path FROM files WHERE id=?", (file_id,)).fetchone()
@@ -219,3 +225,23 @@ class DB:
 
     def commit(self):
         self.conn.commit()
+
+    # ---------------- parse errors ----------------
+
+    def set_parse_error(self, path: str, error: str):
+        self.conn.execute(
+            "INSERT INTO parse_errors (path, error) VALUES (?, ?) "
+            "ON CONFLICT(path) DO UPDATE SET error = excluded.error",
+            (path, error),
+        )
+
+    def clear_parse_error(self, path: str):
+        self.conn.execute("DELETE FROM parse_errors WHERE path=?", (path,))
+
+    def parse_errors(self, limit: int = 50) -> list[dict]:
+        return [
+            {"file": r[0], "error": r[1]}
+            for r in self.conn.execute(
+                "SELECT path, error FROM parse_errors ORDER BY path LIMIT ?", (limit,)
+            )
+        ]

@@ -72,6 +72,8 @@ class PythonAdapter:
 
     def parse(self, source: bytes) -> ParseResult:
         tree = self._parser.parse(source)
+        if tree.root_node.has_error:
+            raise SyntaxError("python: tree-sitter parse error(s) in root node")
         symbols: list[SymbolInfo] = []
         imports: list[ImportRef] = []
         module_doc = ""

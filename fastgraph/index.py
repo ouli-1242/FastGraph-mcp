@@ -78,7 +78,9 @@ class Indexer:
             for rel, st, hash_, result, source in parsed:
                 if result is None:
                     stats.errors += 1
+                    self.db.set_parse_error(rel, "parse failed")
                     continue
+                self.db.clear_parse_error(rel)
                 self._store_file(rel, st, hash_, result)
                 stats.parsed += 1
 
@@ -172,9 +174,16 @@ class Indexer:
         self.db.register_fts(fid, rel, symbols)
 
         rows: list[tuple] = []
-        name_ids = self.db.symbol_name_to_id(fid)
-        for s in result.symbols:
-            src = name_ids.get(s.name)
+        sym_ids = [
+            r[0]
+            for r in self.db.conn.execute(
+                "SELECT id FROM symbols WHERE file_id=? ORDER BY id", (fid,)
+            )
+        ]
+        if len(sym_ids) != len(result.symbols):
+            name_ids = self.db.symbol_name_to_id(fid)
+            sym_ids = [name_ids.get(s.name) for s in result.symbols]
+        for s, src in zip(result.symbols, sym_ids):
             if src is None:
                 continue
             for c in s.calls:
@@ -212,34 +221,45 @@ def _resolve_all(db: DB) -> None:
     }
 
     for rel_id, source_id, target, rtype in pending:
-        if rtype != "calls":
-            continue
-        candidates: list[int] = []
-        if "." in target:
-            last = target.rsplit(".", 1)[-1]
-            cands_by_name = db.resolve_single_name(last)
-            # prefer exact qualified suffix match
-            for cid in cands_by_name:
-                q = sym_files.get(cid, ("", ""))[1]
-                if q == target or q.endswith("." + target):
-                    candidates.append(cid)
-            if not candidates:
-                candidates = cands_by_name
-        else:
-            candidates = db.resolve_single_name(target)
+        if rtype == "calls":
+            candidates = _candidates_for_target(db, sym_files, target)
+            if len(candidates) == 1:
+                db.apply_resolution(rel_id, candidates[0])
+            elif len(candidates) > 1:
+                src_fid = caller_file.get(source_id)
+                imports = import_text_by_file.get(src_fid or -1, "")
+                if imports:
+                    picked = [
+                        cid for cid in candidates
+                        if _class_hint(sym_files.get(cid, ("", ""))[1]) in imports
+                    ]
+                    if len(picked) == 1:
+                        db.apply_resolution(rel_id, picked[0])
+        elif rtype == "inherits":
+            # bases are class names: unique-name match, else skip (heuristic noise)
+            candidates = [
+                cid for cid in db.resolve_single_name(target)
+                if sym_files.get(cid, ("", ""))[1].rsplit(".", 1)[-1] == target.rsplit(".", 1)[-1]
+            ]
+            if len(candidates) == 1:
+                db.apply_resolution(rel_id, candidates[0])
 
-        if len(candidates) == 1:
-            db.apply_resolution(rel_id, candidates[0])
-        elif len(candidates) > 1:
-            src_fid = caller_file.get(source_id)
-            imports = import_text_by_file.get(src_fid or -1, "")
-            if imports:
-                picked = [
-                    cid for cid in candidates
-                    if _class_hint(sym_files.get(cid, ("", ""))[1]) in imports
-                ]
-                if len(picked) == 1:
-                    db.apply_resolution(rel_id, picked[0])
+
+def _candidates_for_target(db: DB, sym_files: dict[int, tuple], target: str) -> list[int]:
+    candidates: list[int] = []
+    if "." in target:
+        last = target.rsplit(".", 1)[-1]
+        cands_by_name = db.resolve_single_name(last)
+        # prefer exact qualified suffix match
+        for cid in cands_by_name:
+            q = sym_files.get(cid, ("", ""))[1]
+            if q == target or q.endswith("." + target):
+                candidates.append(cid)
+        if not candidates:
+            candidates = cands_by_name
+    else:
+        candidates = db.resolve_single_name(target)
+    return candidates
 
 
 def _class_hint(qname: str) -> str:
