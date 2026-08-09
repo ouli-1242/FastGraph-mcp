@@ -15,7 +15,7 @@ FastGraph-MCP 是一个轻量级代码智能 MCP 服务器，补充 Serena 等�
 仓库即项目根，无需进入子目录：
 
 ```bash
-cd D:\tools\FastGraph-mcp
+cd /path/to/FastGraph-mcp
 python -m pip install -e .        # 或 python -m pip install .
 ```
 
@@ -31,13 +31,15 @@ python -m pip install -e .        # 或 python -m pip install .
 
 ### Claude Code
 
+`cwd` 填克隆本仓库的路径：
+
 ```json
 {
   "mcpServers": {
     "fastgraph": {
       "command": "python",
       "args": ["-m", "fastgraph", "--root", "/path/to/project"],
-      "cwd": "D:\\tools\\FastGraph-mcp"
+      "cwd": "/path/to/fastgraph-repo"
     }
   }
 }
@@ -52,7 +54,7 @@ python -m pip install -e .        # 或 python -m pip install .
       "type": "stdio",
       "command": "python",
       "args": ["-m", "fastgraph", "--root", "/path/to/project"],
-      "cwd": "D:\\tools\\FastGraph-mcp"
+      "cwd": "/path/to/fastgraph-repo"
     }
   }
 }
