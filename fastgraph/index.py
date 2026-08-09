@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -11,6 +13,7 @@ from pathlib import Path
 
 from fastgraph.config import DEFAULT_EXCLUDES, MAX_FILE_SIZE
 from fastgraph.db import DB
+from fastgraph.parsers.base import SymbolInfo
 from fastgraph.parsers.registry import get_adapter
 
 _EXT_LANG = {
@@ -27,6 +30,12 @@ _EXT_LANG = {
 
 MAX_PARSE_WORKERS = min(8, (os.cpu_count() or 2))
 
+# Guard against accidentally walking a huge, unindexed directory (e.g. an
+# unactivated default root like a user's home folder): stop once this many
+# entries were checked. refresh() reports `skipped` so tools can hint at
+# activate_project().
+MAX_SCAN_ENTRIES = 200_000
+
 
 @dataclass
 class IndexStats:
@@ -37,6 +46,7 @@ class IndexStats:
     duration_ms: float = 0.0
     total_files: int = 0
     total_symbols: int = 0
+    skipped: bool = False
 
 
 class Indexer:
@@ -44,8 +54,17 @@ class Indexer:
         self.root = root.resolve()
         self.db = db
         self.excludes = excludes or DEFAULT_EXCLUDES
+        self._walk_skipped = False
+        # Serialize refresh() across threads: every tool call runs _ensure_fresh,
+        # and concurrent writes to the same sqlite connection crash with
+        # InterfaceError / UNIQUE constraint races (see STRESS_TEST_REPORT P1-1).
+        self._refresh_lock = threading.RLock()
 
     def refresh(self) -> IndexStats:
+        with self._refresh_lock:
+            return self._refresh()
+
+    def _refresh(self) -> IndexStats:
         start = time.perf_counter()
         stats = IndexStats()
         cached = self.db.file_map()
@@ -67,10 +86,12 @@ class Indexer:
                 continue  # untouched: zero IO
             to_parse.append((rel, p))
 
-        for rel in cached:
-            if rel not in seen:
-                self.db.delete_file(rel)
-                stats.deleted += 1
+        stats.skipped = getattr(self, "_walk_skipped", False)
+        if not stats.skipped:
+            for rel in cached:
+                if rel not in seen:
+                    self.db.delete_file(rel)
+                    stats.deleted += 1
 
         if to_parse:
             with ThreadPoolExecutor(max_workers=MAX_PARSE_WORKERS) as ex:
@@ -85,12 +106,19 @@ class Indexer:
                 stats.parsed += 1
 
         if stats.parsed or stats.deleted:
-            _resolve_all(self.db)
             self.db.commit()
+
+        # Re-run resolution on leftover unresolved relations so improved
+        # resolver logic (e.g. constructor disambiguation) heals existing
+        # indexes without a full rebuild. Cheap when nothing is unresolved.
+        if self.db.conn.execute("SELECT 1 FROM relations WHERE target_id IS NULL AND rtype IN ('calls','inherits') LIMIT 1").fetchone():
+            _resolve_all(self.db)
+        self.db.commit()
 
         stats.duration_ms = (time.perf_counter() - start) * 1000
         stats.total_files = len(seen)
         stats.total_symbols = self.db.count_symbols()
+        stats.skipped = getattr(self, "_walk_skipped", False)
         return stats
 
     def force_index(self) -> IndexStats:
@@ -105,6 +133,7 @@ class Indexer:
     def _walk(self) -> list[Path]:
         out: list[Path] = []
         stack = [self.root]
+        checked = 0
         while stack:
             d = stack.pop()
             try:
@@ -113,6 +142,10 @@ class Indexer:
                 continue
             with entries as it:
                 for e in it:
+                    checked += 1
+                    if checked > MAX_SCAN_ENTRIES:
+                        self._walk_skipped = True
+                        return out
                     name = e.name
                     if name in self.excludes or name.startswith("."):
                         continue
@@ -151,6 +184,17 @@ class Indexer:
     def _store_file(self, rel: str, st, hash_: str, result) -> None:
         """Single-threaded DB write for one parsed file."""
         lang = result.language
+        module_doc = getattr(result, "module_doc", "") or ""
+        if module_doc:
+            # Adapters return a module-level docstring separately; surface it
+            # as a `module` symbol so top-of-file docs are searchable (was
+            # silently dropped, so Chinese module docs were invisible).
+            stem = Path(rel).stem
+            result.symbols.insert(0, SymbolInfo(
+                name=stem, kind="module", qualified_name=stem,
+                signature="", doc=module_doc,
+                start_line=1, end_line=1, start_col=0, end_col=0,
+            ))
         symbols = [
             {
                 "name": s.name,
@@ -228,13 +272,43 @@ def _resolve_all(db: DB) -> None:
             elif len(candidates) > 1:
                 src_fid = caller_file.get(source_id)
                 imports = import_text_by_file.get(src_fid or -1, "")
+                picked: list[int] = []
                 if imports:
                     picked = [
                         cid for cid in candidates
                         if _class_hint(sym_files.get(cid, ("", ""))[1]) in imports
                     ]
-                    if len(picked) == 1:
-                        db.apply_resolution(rel_id, picked[0])
+                # `self.tutor_agent.run`: the attribute name maps 1:1 onto the
+                # snake_cased owner class (TutorAgent -> tutor_agent), which
+                # resolves the per-instance dispatch without needing source
+                # assignment tracking.
+                if len(picked) != 1 and target.startswith("self."):
+                    parts = target.split(".")
+                    # `self._method(...)`: bare member name, unique -> link it
+                    if len(parts) == 2:
+                        solo = db.resolve_single_name(parts[1])
+                        if len(solo) == 1:
+                            picked = solo
+                    elif len(parts) >= 3:
+                        attr = _snake(parts[1])
+                        attr_picked = [
+                            cid for cid in candidates
+                            if _matches_attr(sym_files.get(cid, ("", ""))[1], attr)
+                        ]
+                        if len(attr_picked) == 1:
+                            picked = attr_picked
+                if len(picked) != 1 and "." not in target:
+                    # bare-name target: prefer the exact qualified_name match —
+                    # `new BizException()` should resolve to the class, not the
+                    # same-named constructors (A9 impact_analysis blind spot).
+                    exact = [
+                        cid for cid in candidates
+                        if sym_files.get(cid, ("", ""))[1] == target
+                    ]
+                    if len(exact) == 1:
+                        picked = exact
+                if len(picked) == 1:
+                    db.apply_resolution(rel_id, picked[0])
         elif rtype == "inherits":
             # bases are class names: unique-name match, else skip (heuristic noise)
             candidates = [
@@ -265,5 +339,32 @@ def _candidates_for_target(db: DB, sym_files: dict[int, tuple], target: str) -> 
 def _class_hint(qname: str) -> str:
     parts = qname.split(".")
     return parts[0].lower() if parts else ""
+
+
+_SNAKE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+def _snake(name: str) -> str:
+    return _SNAKE_RE.sub("_", name).lower()
+
+
+def _matches_attr(qname: str, attr: str) -> bool:
+    """Does the symbol's owner class plausibly back ``self.<attr>``?
+
+    Matches when the snake_cased class name equals the attr, or when the
+    attr is the trailing snake token of the class name (self.llm -> DeepSeekLLM,
+    self.agent -> BaseAgent) or a known prefix alias (self.llm -> LLMCLIENT).
+    """
+    if not qname:
+        return False
+    cls = qname.split(".")[0]
+    if not cls:
+        return False
+    snake = _snake(cls)
+    if snake == attr:
+        return True
+    tokens = snake.split("_")
+    if len(tokens) > 1 and tokens[-1] == attr:
+        return True
+    return False
 
 

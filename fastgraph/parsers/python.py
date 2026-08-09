@@ -7,7 +7,7 @@ from tree_sitter import Language, Parser
 
 from fastgraph.parsers.base import CallRef, ImportRef, ParseResult, SymbolInfo
 from fastgraph.parsers.registry import register_adapter
-from fastgraph.parsers.util import node_text
+from fastgraph.parsers.util import call_targets, node_text
 
 
 def _parse_calls(node, source: bytes) -> list[CallRef]:
@@ -20,11 +20,18 @@ def _parse_calls(node, source: bytes) -> list[CallRef]:
         if n.type == "call":
             fn = n.child_by_field_name("function")
             if fn is not None:
-                target = node_text(fn, source, 160)
-                last = target.split(".")[-1]
-                calls.append(CallRef(target=last or target, line=n.start_point[0] + 1))
-                if "." in target:
+                for target in call_targets(fn, source):
                     calls.append(CallRef(target=target, line=n.start_point[0] + 1))
+            # plain-identifier arguments are references, not calls: captures
+            # FastAPI `Depends(get_current_user)`, callbacks, etc., so
+            # rename_impact sees them while the call graph stays clean (A6).
+            for arg in n.named_children:
+                if arg.type == "argument_list":
+                    for a in arg.named_children:
+                        if a.type == "identifier":
+                            name = node_text(a, source, 120)
+                            if name:
+                                calls.append(CallRef(target=name, line=a.start_point[0] + 1, rtype="references"))
         for c in n.named_children:
             walk(c)
 
@@ -133,6 +140,30 @@ class PythonAdapter:
                     for s in node.named_children:
                         if s.type == "string":
                             module_doc = node_text(s, source, 500)
+                if t == "expression_statement" and not stack:
+                    assign = next(
+                        (c for c in node.named_children if c.type == "assignment"),
+                        None,
+                    )
+                    if assign is not None:
+                        lhs = assign.child_by_field_name("left")
+                        if lhs is not None and lhs.type == "identifier":
+                            name = node_text(lhs, source, 120)
+                            if name:
+                                symbols.append(
+                                    SymbolInfo(
+                                        name=name,
+                                        kind="variable",
+                                        qualified_name=name,
+                                        signature=node_text(node, source, 200),
+                                        doc="",
+                                        start_line=assign.start_point[0] + 1,
+                                        end_line=assign.end_point[0] + 1,
+                                        start_col=assign.start_point[1],
+                                        end_col=assign.end_point[1],
+                                        calls=_parse_calls(assign, source),
+                                    )
+                                )
                 for c in node.named_children:
                     walk(c, stack)
 

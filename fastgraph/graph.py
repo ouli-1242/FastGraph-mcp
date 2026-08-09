@@ -22,7 +22,13 @@ def symbol_row(r: tuple) -> dict:
 
 
 def find_symbols(db: DB, name: str, limit: int = 20) -> list[dict]:
-    """Locate symbols by plain name or dotted qualified name."""
+    """Locate symbols by plain name or dotted qualified name.
+
+    Supports ``Class.method`` (exact qualified_name match) and, for 3+ segments,
+    ``module.Class.method`` — the leading segment is resolved to its
+    module/class symbol's file, then the rest is matched against qualified
+    names inside that file (A7).
+    """
     q = (
         "SELECT s.id, s.name, s.kind, s.qualified_name, s.signature, s.start_line, "
         "f.path"
@@ -31,7 +37,37 @@ def find_symbols(db: DB, name: str, limit: int = 20) -> list[dict]:
         " ORDER BY s.file_id LIMIT ?"
     )
     rows = db.conn.execute(q, (name, name, limit)).fetchall()
-    return [symbol_row(r) for r in rows]
+    parts = name.split(".")
+    if len(parts) >= 3:
+        qual = ".".join(parts[1:])
+        # Leading segment is a module (file stem) or a class symbol. Resolve it
+        # to a set of candidate file ids, then match the remaining segments as
+        # a qualified_name inside those files. Does not depend on a module
+        # symbol existing (the parser only emits one when the file has imports
+        # or a docstring).
+        file_ids: set[int] = {
+            m[1]
+            for m in db.conn.execute(
+                "SELECT id, file_id FROM symbols WHERE name = ? AND kind IN ('module', 'class')",
+                (parts[0],),
+            ).fetchall()
+        }
+        for (fp,) in db.conn.execute("SELECT path FROM files"):
+            if fp.rsplit("/", 1)[-1].rsplit(".", 1)[0] == parts[0]:
+                r = db.conn.execute("SELECT id FROM files WHERE path=?", (fp,)).fetchone()
+                if r:
+                    file_ids.add(r[0])
+        seen = {r[0] for r in rows}
+        for fid in file_ids:
+            extra = db.conn.execute(
+                "SELECT s.id, s.name, s.kind, s.qualified_name, s.signature, s.start_line, "
+                "f.path FROM symbols s JOIN files f ON f.id = s.file_id"
+                " WHERE s.qualified_name = ? AND s.file_id = ? ORDER BY s.start_line LIMIT ?",
+                (qual, fid, limit),
+            ).fetchall()
+            rows.extend(r for r in extra if r[0] not in seen)
+            seen.update(r[0] for r in extra)
+    return [symbol_row(r) for r in rows[:limit]]
 
 
 def lookup_exact(db: DB, name: str) -> list[int]:
@@ -67,8 +103,10 @@ def symbol_by_id(db: DB, sid: int) -> dict | None:
 
 
 def callers(db: DB, sid: int) -> list[int]:
-    """Direct in-edges: relations targeting sid."""
-    rows = db.conn.execute("SELECT source_id FROM relations WHERE target_id = ?", (sid,)).fetchall()
+    """Direct in-edges (calls only): relations targeting sid."""
+    rows = db.conn.execute(
+        "SELECT source_id FROM relations WHERE target_id = ? AND rtype = 'calls'", (sid,)
+    ).fetchall()
     return [r[0] for r in rows]
 
 
@@ -78,8 +116,13 @@ def caller_ids(db: DB, sid: int) -> list[int]:
 
 
 def callee_ids(db: DB, sid: int) -> list[int]:
+    # calls only: inheritance is a hierarchy edge, not something the symbol
+    # "calls" (was: pulls in `inherits` targets, so find_callees(Derived)
+    # reported the base class — inconsistent with symbol_info.callees).
     rows = db.conn.execute(
-        "SELECT target_id FROM relations WHERE source_id = ? AND target_id IS NOT NULL", (sid,)
+        "SELECT target_id FROM relations WHERE source_id = ? "
+        "AND target_id IS NOT NULL AND rtype = 'calls'",
+        (sid,),
     ).fetchall()
     return [r[0] for r in rows]
 
@@ -138,6 +181,29 @@ def find_callees(db: DB, name: str, limit: int = 50, depth: int = 1) -> list[dic
     return [o for o in (symbol_by_id(db, s) for s in seen) if o][:limit]
 
 
+def _callers_with_class(db: DB, sid: int) -> list[int]:
+    """Callers of a symbol, plus callers of its enclosing class's members.
+
+    Resolves chains like ``chat() -> orchestrator.handle_chat -> ... -> TutorAgent``
+    where the class-level init/instantiation is not recorded as a direct edge:
+    anything calling ``Orchestrator.handle_chat`` is also an upstream of
+    ``Orchestrator`` and of ``Orchestrator.__init__``.
+    """
+    out = list(callers(db, sid))
+    info = symbol_by_id(db, sid)
+    if info:
+        qname = info.get("qualified_name") or ""
+        cls = qname.rsplit(".", 1)[0] if "." in qname else None
+        if cls:
+            for r in db.conn.execute(
+                "SELECT DISTINCT source_id FROM relations WHERE target = ? OR target LIKE ?",
+                (cls, cls + ".%"),
+            ):
+                if r[0] not in out:
+                    out.append(r[0])
+    return out
+
+
 def path_between(db: DB, from_name: str, to_name: str, max_depth: int = 8) -> list[list[dict]] | None:
     """BFS upward from `to_name` until we reach `from_name`. Returns path symbols."""
     src = find_symbols(db, from_name)
@@ -163,7 +229,7 @@ def path_between(db: DB, from_name: str, to_name: str, max_depth: int = 8) -> li
     for depth in range(max_depth):
         nxt: list[int] = []
         for sid in frontier:
-            for c in callers(db, sid):
+            for c in _callers_with_class(db, sid):
                 if c in visited:
                     continue
                 visited.add(c)
@@ -244,14 +310,96 @@ def _impact_brief(info: dict) -> dict:
 _IMP_RE = re.compile(r"(?:from\s+|import\s*\{[^}]+\}\s*from\s*|import\s+|require\(|using\s+)(['\"]?)([\w./@~-]+)", re.IGNORECASE)
 
 
+def _imported_names(text: str) -> list[str]:
+    """Symbols actually brought into scope by one import line.
+
+    ``from pkg.mod import A, B as C`` -> [A, B, C]; ``import pkg.mod`` -> [mod].
+    Used by rename_impact so ``from app.agents.resource_agents import
+    DocumentAgent`` no longer counts as a reference to ``RESOURCE_AGENTS``
+    (which only shares the module path).
+    """
+    m = re.match(r"^\s*from\s+([\w.]+)\s+import\s+(.*)$", text.strip(), re.I)
+    if m:
+        names: list[str] = []
+        for part in m.group(2).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if " as " in part:
+                part = part.split(" as ", 1)[-1].strip()
+            part = part.strip()
+            if part and (part[0] in "\"'(" or part == "*"):
+                continue  # 'import *', 'import ("a")', string wildcards
+            names.append(part)
+        return [n for n in names if n]
+    m = re.match(r"^\s*import\s+(.+)$", text, re.I)
+    if m:
+        tail: list[str] = []
+        for part in m.group(1).split(","):
+            part = part.strip()
+            if " as " in part:
+                part = part.split(" as ", 1)[-1].strip()
+            tail.append(part.rsplit(".", 1)[-1].strip())
+        return [n for n in tail if n]
+    return []
+
+
+def _like_escape(s: str) -> str:
+    """Escape LIKE wildcards so a path containing `%`/`_` matches literally
+    (was: `my_file_v2.py` wildcard-matched an existing `myXfile_v2.py`)."""
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def resolve_file(db: DB, path: str) -> str | None:
+    """Best-effort path lookup: exact match, then path-suffix, then basename.
+
+    Clients (LLMs) often pass a bare filename like ``main.py`` while the
+    index stores project-relative paths. If the hint is ambiguous, prefer
+    an unambiguous suffix match and otherwise return None (caller reports).
+    """
+    if not path:
+        return None
+    p = path.replace("\\", "/")
+    while p.startswith("./"):
+        p = p[2:]
+    if p.endswith("/"):
+        p = p.rstrip("/")
+    exact: list[str] = [r[0] for r in db.conn.execute("SELECT path FROM files WHERE path = ?", (p,))]
+    if len(exact) == 1:
+        return exact[0]
+    suffix = [
+        r[0]
+        for r in db.conn.execute(
+            "SELECT path FROM files WHERE path LIKE ? ESCAPE '\\'", (f"%/{_like_escape(p)}",)
+        )
+    ]
+    if len(suffix) == 1:
+        return suffix[0]
+    base = p.rsplit("/", 1)[-1]
+    basenames = [
+        r[0]
+        for r in db.conn.execute(
+            "SELECT path FROM files WHERE path LIKE ? ESCAPE '\\'", (f"%/{_like_escape(base)}",)
+        )
+    ]
+    if len(basenames) == 1:
+        return basenames[0]
+    if len(suffix) > 1 and all(x.endswith("/" + p) for x in suffix):
+        return None  # ambiguous: caller decides via candidates
+    return None
+
+
 def file_symbols(db: DB, path: str, limit: int = 200) -> list[dict]:
     """All indexed symbols declared in one file, in source order."""
+    resolved = resolve_file(db, path)
+    if resolved is None:
+        return []
     rows = db.conn.execute(
         """SELECT s.id, s.name, s.kind, s.qualified_name, s.signature,
                   s.start_line, s.end_line, f.path
            FROM symbols s JOIN files f ON f.id = s.file_id
            WHERE f.path = ? ORDER BY s.start_line, s.start_col LIMIT ?""",
-        (path, limit),
+        (resolved, limit),
     ).fetchall()
     return [
         {"id": r[0], "symbol": r[1], "kind": r[2], "qualified_name": r[3],
@@ -272,23 +420,59 @@ def import_targets(db: DB, import_text: str, import_file: str) -> list[str]:
     else:
         mod = mod.replace("/", ".")
     mod = mod.strip(".")
+    # CommonJS require paths often carry a file extension ("./x/index.js")
+    # while the index stores extension-less stems; normalize before matching.
+    for _ext in (".js", ".mjs", ".cjs", ".jsx", ".ts", ".mts", ".cts", ".tsx"):
+        if mod.endswith(_ext):
+            mod = mod[: -len(_ext)]
+            break
     dir_part = "/".join(import_file.split("/")[:-1])
     rel_root = f"{dir_part}/" if dir_part else ""
     candidates: list[str] = []
+    # Match case-insensitively: Java/C# fully-qualified names are mixed-case
+    # (com.travel...RateLimiter), and the file stems below are lowercased, so a
+    # case-sensitive compare would never match them (A8).
+    mod = mod.lower()
     for (p,) in db.conn.execute("SELECT path FROM files"):
         stem = p.rsplit(".", 1)[0].replace("/", ".").lower()
         if stem == mod or stem.endswith("." + mod):
             candidates.append(p)
         elif mod.startswith(".") and p.lower() == rel_root + mod[1:] + ".__init__":
             candidates.append(p)
+    # `from pkg import a, b, c` (multi-symbol package import): the regex only
+    # captured `pkg`, so also resolve each imported name against pkg's dir.
+    _multi = re.match(r"\s*from\s+[\w./@~-]+\s+import\s+(.+)", import_text, re.IGNORECASE)
+    if not candidates and _multi:
+        names_part = _multi.group(1).split(" as ")[0]
+        for name in (n.strip().rstrip(",") for n in names_part.split(",")):
+            if not name or "." in name or name in ("*", "(", ")"):
+                continue
+            target = f"{mod}.{name.lower()}"
+            for (p,) in db.conn.execute("SELECT path FROM files"):
+                stem = p.rsplit(".", 1)[0].replace("/", ".").lower()
+                if stem == target or stem.endswith("." + target):
+                    if p not in candidates:
+                        candidates.append(p)
     return candidates[:5]
 
 
 def module_dependencies(db: DB, path: str) -> dict:
     """File-level import view: what a file imports, and who imports it."""
-    fid = db.get_file_id(path)
+    resolved = resolve_file(db, path)
+    if resolved is None:
+        ambiguous = [
+            r[0]
+            for r in db.conn.execute(
+                "SELECT path FROM files WHERE path LIKE ? ORDER BY path",
+                (f"%/{path.rsplit('/', 1)[-1]}",),
+            )
+        ]
+        if len(ambiguous) > 1:
+            return {"found": False, "path": path, "ambiguous": True, "candidates": ambiguous[:10]}
+        return {"found": False, "path": path}
+    fid = db.get_file_id(resolved)
     if fid is None:
-        return {"found": False}
+        return {"found": False, "path": resolved}
     imports: list[dict] = []
     for text, line in db.conn.execute(
         "SELECT text, line FROM file_imports WHERE file_id = ? ORDER BY line", (fid,)
@@ -413,6 +597,28 @@ def rename_impact(db: DB, name: str, limit: int = 100) -> dict:
         ):
             refs.append({"symbol": r[0], "file": r[4], "line": r[3], "rtype": "uses", "via": r[2][:60]})
 
+    # 3) import statements that actually bind the symbol's name (e.g.
+    #    `from app.agents.orchestrator import orchestrator` when renaming
+    #    Orchestrator, or `from app.services.llm import deepseek_llm` when
+    #    renaming the deepseek_llm variable). Only the imported name counts:
+    #    a shared *module path* (resource_agents) is not a symbol reference.
+    #    Runs even when the symbol is unindexed (module-level instances),
+    #    because imports still tell us who is affected.
+    import_like = f"%{name.lower()}%"
+    for r in db.conn.execute(
+        """SELECT text, line, f.path
+           FROM file_imports fi JOIN files f ON f.id = fi.file_id
+           WHERE LOWER(text) LIKE ?
+           ORDER BY f.path, fi.line LIMIT ?""",
+        (import_like, limit),
+    ):
+        imported = _imported_names(r[0])
+        if not any(name.lower() in n.lower() for n in imported):
+            continue
+        refs.append({"symbol": name, "file": r[2], "line": r[1], "rtype": "import", "via": r[0][:60]})
+        if len(refs) >= limit:
+            break
+
     risk = _risk_grade(defs, refs)
     return {
         "symbol": name,
@@ -496,7 +702,9 @@ def type_hierarchy(db: DB, name: str) -> dict:
     def descendants_of(sid: int) -> list[dict]:
         out: list[dict] = []
         frontier = {sid}
-        seen = set()
+        # seed seen with the root itself so a cyclic hierarchy (A extends B,
+        # B extends A) cannot leak the root back into its own descendants.
+        seen = {sid}
         for _ in range(6):
             nxt: set[int] = set()
             for cid in frontier:

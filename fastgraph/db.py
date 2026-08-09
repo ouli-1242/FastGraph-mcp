@@ -59,8 +59,7 @@ CREATE TABLE IF NOT EXISTS parse_errors (
 
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_symbols USING fts5(
     name, qualified_name, doc, kind, signature,
-    file_path,
-    content=''
+    file_path
 );
 """
 
@@ -75,11 +74,33 @@ class DB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
+        self._migrate_schema()
         self.conn.executescript(SCHEMA)
+        self.conn.commit()
+        self._heal_fts()
         self.conn.commit()
 
     def close(self):
         self.conn.close()
+
+    # ---------------- schema migration ----------------
+
+    def _migrate_schema(self) -> None:
+        """Rebuild fts_symbols if it was created contentless (content='').
+
+        Contentless FTS5 tables cannot be DELETE-filtered by column and their
+        row column reads back as NULL, which broke search. The new schema is a
+        regular FTS5 table; the FTS payload is re-populated lazily by
+        register_fts on the next refresh.
+        """
+        try:
+            row = self.conn.execute(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='fts_symbols'"
+            ).fetchone()
+        except Exception:
+            return
+        if row and "content=''" in (row[0] or ""):
+            self.conn.execute("DROP TABLE fts_symbols")
 
     # ---------------- files ----------------
 
@@ -183,13 +204,92 @@ class DB:
     # ---------------- FTS ----------------
 
     def register_fts(self, file_id: int, path: str, symbols: list[dict]) -> None:
-        self.conn.execute("DELETE FROM fts_symbols WHERE file_path=?", (path,))
+        """Rebuild the FTS index rows for one file.
+
+        fts_symbols is a regular FTS5 table storing payload columns; we keep
+        rowid == symbols.id so search can resolve MATCH hits straight to
+        symbols by id. Delete this file's rows by rowid, then re-insert.
+        """
         if not symbols:
             return
+        if self._heal_fts():
+            return  # full rebuild already covers this file's rows
+        # map symbols to their rowids by (name, kind, start_line): `name` alone
+        # is ambiguous when a file has same-named symbols (methods on
+        # different classes, overloads).
+        sym_rows = self.conn.execute(
+            "SELECT id, name, kind, qualified_name, start_line FROM symbols WHERE file_id=?",
+            (file_id,),
+        ).fetchall()
+        key_to_id = {(r[1], r[2], r[3], r[4]): r[0] for r in sym_rows}
+        rows = []
+        seen_sids: set[int] = set()
+        for s in symbols:
+            k = (s["name"], s.get("kind", ""), s["qualified_name"], s["start_line"])
+            sid = key_to_id.get(k)
+            if sid is None and len(sym_rows) == len(symbols):
+                sid = sym_rows[0][0]
+                sym_rows = sym_rows[1:]
+            if sid is None:
+                continue
+            # key_to_id collapses duplicate (name, kind, qualified_name,
+            # start_line) symbols (minified JS) onto one rowid; FTS5 forbids
+            # duplicate rowids, so keep the first row per id.
+            if sid in seen_sids:
+                continue
+            seen_sids.add(sid)
+            rows.append(
+                (
+                    sid,
+                    s["name"],
+                    s["qualified_name"],
+                    (s.get("doc") or "")[:400],
+                    s.get("kind", ""),
+                    (s.get("signature") or "")[:200],
+                    path,
+                )
+            )
+        if not rows:
+            return
+        ids = {r[0] for r in rows}
+        ph = ",".join("?" * len(ids))
+        self.conn.execute(f"DELETE FROM fts_symbols WHERE rowid IN ({ph})", list(ids))
         self.conn.executemany(
-            "INSERT INTO fts_symbols (name, qualified_name, doc, file_path) VALUES (?,?,?,?)",
-            [(s["name"], s["qualified_name"], s["doc"][:400], path) for s in symbols],
+            "INSERT INTO fts_symbols "
+            "(rowid, name, qualified_name, doc, kind, signature, file_path) "
+            "VALUES (?,?,?,?,?,?,?)",
+            rows,
         )
+
+    def _fts_aligned(self) -> bool:
+        """True when fts rowids match symbols ids (at least one hit)."""
+        try:
+            r = self.conn.execute(
+                "SELECT 1 FROM fts_symbols f JOIN symbols s ON f.rowid = s.id LIMIT 1"
+            ).fetchone()
+        except Exception:
+            return True
+        return r is not None
+
+    def _heal_fts(self) -> bool:
+        """Rebuild FTS from symbols when rowid alignment is broken
+        (index created before rowid-synced inserts). Returns True when a
+        full rebuild happened (caller can skip its own incremental write)."""
+        if self._fts_aligned():
+            return False
+        self.conn.execute("DELETE FROM fts_symbols")
+        rows = self.conn.execute(
+            """SELECT s.id, s.name, s.qualified_name, s.doc, s.kind, s.signature, f.path
+               FROM symbols s JOIN files f ON f.id = s.file_id"""
+        ).fetchall()
+        if rows:
+            self.conn.executemany(
+                "INSERT INTO fts_symbols "
+                "(rowid, name, qualified_name, doc, kind, signature, file_path) "
+                "VALUES (?,?,?,?,?,?,?)",
+                rows,
+            )
+        return True
 
     # ---------------- resolution ----------------
 

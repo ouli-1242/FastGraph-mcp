@@ -36,7 +36,13 @@ class Toolbox:
         at the folder they are working on. Returns a description of what the
         new active root indexes.
         """
-        path = Path(root).resolve() if root else self.root.resolve()
+        if root is None:
+            path = self.root.resolve()
+        else:
+            if not str(root).strip():
+                # keep the empty-root rejection in sync with _for_root
+                return {"ok": False, "error": "root must be a non-empty directory path", "active_root": str(self._active_root or self.root)}
+            path = Path(root).resolve()
         if not path.is_dir():
             return {"ok": False, "error": f"root {path} is not an existing directory", "active_root": str(self._active_root) if self._active_root else str(self.root)}
         if path == self.root.resolve():
@@ -54,6 +60,10 @@ class Toolbox:
             if self._active_root is not None and self._active_root != self.root.resolve():
                 return self._roots[self._active_root]
             return self
+        if not str(root).strip():
+            # Path("") resolves to the process cwd, silently indexing a folder
+            # the caller never meant (e.g. a desktop app's System32 cwd).
+            raise ValueError("root must be a non-empty directory path")
         path = Path(root).resolve()
         if path == self.root.resolve():
             return self
@@ -69,13 +79,20 @@ class Toolbox:
     def _ensure_fresh(self) -> dict:
         """Lazy incremental refresh: only changed files re-parsed."""
         stats = self.indexer.refresh()
-        return {
+        out = {
             "scanned": stats.scanned,
             "parsed": stats.parsed,
             "deleted": stats.deleted,
             "errors": stats.errors,
             "refresh_ms": round(stats.duration_ms, 1),
         }
+        if stats.skipped:
+            out["skipped"] = True
+            out["hint"] = (
+                "directory too large to scan; call activate_project(root=...) "
+                "with the actual project folder"
+            )
+        return out
 
     def _brief(self, sym: dict) -> dict:
         """Compact symbol view: no source body, just location + signature."""
@@ -135,9 +152,11 @@ class Toolbox:
         t0 = time.perf_counter()
         tb = self._for_root(root)
         refresh = tb._ensure_fresh()
+        base = len(graph.find_symbols(tb.db, symbol))
         callers = graph.find_callers(tb.db, symbol, limit=limit, depth=depth)
         return {
             "symbol": symbol,
+            "found": base > 0,
             "callers": [tb._brief(s) for s in callers],
             "count": len(callers),
             "root": str(tb.root),
@@ -149,9 +168,11 @@ class Toolbox:
         t0 = time.perf_counter()
         tb = self._for_root(root)
         refresh = tb._ensure_fresh()
+        base = len(graph.find_symbols(tb.db, symbol))
         callees = graph.find_callees(tb.db, symbol, limit=limit, depth=depth)
         return {
             "symbol": symbol,
+            "found": base > 0,
             "callees": [tb._brief(s) for s in callees],
             "count": len(callees),
             "root": str(tb.root),
@@ -159,12 +180,12 @@ class Toolbox:
             "ms": round((time.perf_counter() - t0) * 1000, 1),
         }
 
-    def trace_path(self, from_symbol: str, to_symbol: str | None = None, depth: int = 3, root: str | None = None) -> dict:
+    def trace_path(self, from_symbol: str, to_symbol: str | None = None, depth: int = 20, root: str | None = None) -> dict:
         t0 = time.perf_counter()
         tb = self._for_root(root)
         refresh = tb._ensure_fresh()
         if to_symbol:
-            path = graph.path_between(tb.db, from_symbol, to_symbol)
+            path = graph.path_between(tb.db, from_symbol, to_symbol, max_depth=depth)
             return {
                 "from": from_symbol,
                 "to": to_symbol,
@@ -211,10 +232,25 @@ class Toolbox:
                     info = graph.symbol_by_id(tb.db, c)
                     if info:
                         affected.append(tb._brief(info))
+
+        # Cap every part of the output at `limit` — a repo with many untracked
+        # files can otherwise dump thousands of symbols and blow the context.
+        truncated_files = len(changes) > limit
+        truncated_symbols = False
+        capped_files = dict(list(changes.items())[:limit])
+        capped_symbols: dict[str, list] = {}
+        for k, v in by_status.items():
+            if len(v) > limit:
+                truncated_symbols = True
+            capped_symbols[k] = [
+                {"symbol": s["name"], "qualified_name": s["qualified_name"], "file": s["path"], "line": s["start_line"]}
+                for s in v[:limit]
+            ]
         return {
-            "changed_files": changes,
-            "changed_symbols": {k: [{"symbol": s["name"], "qualified_name": s["qualified_name"], "file": s["path"], "line": s["start_line"]} for s in v] for k, v in by_status.items()},
+            "changed_files": capped_files,
+            "changed_symbols": capped_symbols,
             "affected_callers": affected[:limit],
+            "truncated": truncated_files or truncated_symbols,
             "root": str(tb.root),
             "refresh": refresh,
             "ms": round((time.perf_counter() - t0) * 1000, 1),

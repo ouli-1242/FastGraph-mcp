@@ -8,7 +8,7 @@ from tree_sitter import Language, Parser
 
 from fastgraph.parsers.base import CallRef, ImportRef, ParseResult, SymbolInfo
 from fastgraph.parsers.registry import register_adapter
-from fastgraph.parsers.util import node_text
+from fastgraph.parsers.util import call_targets, node_text
 
 _TS_LANGS: dict[str, Language] = {
     "typescript": Language(tree_sitter_typescript.language_typescript()),
@@ -29,10 +29,7 @@ def _calls_in(node, source: bytes) -> list[CallRef]:
         if n.type == "call_expression":
             fn = n.child_by_field_name("function")
             if fn is not None:
-                target = node_text(fn, source, 160)
-                last = target.split(".")[-1]
-                calls.append(CallRef(target=last or target, line=n.start_point[0] + 1))
-                if "." in target:
+                for target in call_targets(fn, source):
                     calls.append(CallRef(target=target, line=n.start_point[0] + 1))
         for c in n.named_children:
             walk(c, False)
@@ -62,6 +59,53 @@ def _ts_bases(node, source: bytes) -> list[CallRef]:
                         CallRef(target=node_text(h, source, 160), line=h.start_point[0] + 1, rtype="inherits")
                     )
     return bases
+
+
+def _module_specifier(node, source: bytes) -> str | None:
+    """Static string/template argument of a require()/import() call, dequoted."""
+    args = node.child_by_field_name("arguments")
+    if args is None:
+        return None
+    for c in args.named_children:
+        if c.type == "string":
+            return node_text(c, source, 300).strip("'\"")
+        if c.type == "template_string":
+            return node_text(c, source, 300).strip("`")
+    return None
+
+
+def _commonjs_imports(node, source: bytes) -> list[ImportRef]:
+    """CommonJS `require("...")` and dynamic `import("...")` as imports.
+
+    ES ``import_statement``s are handled in the main walk; this covers the
+    CommonJS style WeChat mini-programs and legacy Node modules use.
+    """
+    imports: list[ImportRef] = []
+    seen: set[tuple[int, str]] = set()
+
+    def walk(n) -> None:
+        if n.type == "call_expression":
+            fn = n.child_by_field_name("function")
+            if fn is not None:
+                if node_text(fn, source, 160) == "require":
+                    spec = _module_specifier(n, source)
+                    text = f'require("{spec}")' if spec else node_text(n, source, 300)
+                    key = (n.start_point[0] + 1, text)
+                    if key not in seen:
+                        seen.add(key)
+                        imports.append(ImportRef(text=text, line=n.start_point[0] + 1, kind="require"))
+                elif fn.type == "import":
+                    spec = _module_specifier(n, source)
+                    text = f'import("{spec}")' if spec else node_text(n, source, 300)
+                    key = (n.start_point[0] + 1, text)
+                    if key not in seen:
+                        seen.add(key)
+                        imports.append(ImportRef(text=text, line=n.start_point[0] + 1, kind="import"))
+        for c in n.named_children:
+            walk(c)
+
+    walk(node)
+    return imports
 
 
 class TSAdapter:
@@ -130,28 +174,61 @@ class TSAdapter:
                 symbols.append(sym)
                 for c in node.named_children:
                     walk(c, stack + [sym])
+            elif t in ("interface_declaration", "type_alias_declaration", "enum_declaration"):
+                kind = {"interface_declaration": "interface",
+                        "type_alias_declaration": "type",
+                        "enum_declaration": "enum"}[t]
+                name = node_text(node.child_by_field_name("name"), source, 120)
+                parent = stack[-1].qualified_name if stack else None
+                sym = SymbolInfo(
+                    name=name, kind=kind,
+                    qualified_name=parent + "." + name if parent else name,
+                    signature=f"{kind} {name}", doc=_js_doc(node, source),
+                    start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
+                    start_col=node.start_point[1], end_col=node.end_point[1],
+                    parent=parent,
+                )
+                symbols.append(sym)
+                for c in node.named_children:
+                    walk(c, stack + [sym])
+            elif t in ("module", "namespace_declaration", "internal_module"):
+                name = node_text(node.child_by_field_name("name"), source, 120)
+                parent = stack[-1].qualified_name if stack else None
+                sym = SymbolInfo(
+                    name=name, kind="namespace",
+                    qualified_name=parent + "." + name if parent else name,
+                    signature=f"namespace {name}", doc="",
+                    start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
+                    start_col=node.start_point[1], end_col=node.end_point[1],
+                    parent=parent,
+                )
+                symbols.append(sym)
+                for c in node.named_children:
+                    walk(c, stack + [sym])
             elif t in ("lexical_declaration", "variable_declaration"):
                 for v in node.named_children:
                     if v.type == "variable_declarator":
                         vname = node_text(v.child_by_field_name("name"), source, 120)
                         value = v.child_by_field_name("value")
-                        if value is not None and value.type in ("arrow_function", "function_expression"):
-                            parent = stack[-1].qualified_name if stack else None
-                            sym = SymbolInfo(
-                                name=vname, kind="function",
-                                qualified_name=parent + "." + vname if parent else vname,
-                                signature=f"const {vname} = (…)",
-                                doc="",
-                                start_line=v.start_point[0] + 1, end_line=v.end_point[0] + 1,
-                                start_col=v.start_point[1], end_col=v.end_point[1],
-                                parent=parent, calls=_calls_in(value, source),
-                            )
-                            symbols.append(sym)
+                        parent = stack[-1].qualified_name if stack else None
+                        is_fn = value is not None and value.type in ("arrow_function", "function_expression")
+                        sym = SymbolInfo(
+                            name=vname, kind="function" if is_fn else "variable",
+                            qualified_name=parent + "." + vname if parent else vname,
+                            signature=f"const {vname}" + (" = (…)" if is_fn else ""),
+                            doc="",
+                            start_line=v.start_point[0] + 1, end_line=v.end_point[0] + 1,
+                            start_col=v.start_point[1], end_col=v.end_point[1],
+                            parent=parent,
+                            calls=_calls_in(value, source) if value is not None else [],
+                        )
+                        symbols.append(sym)
             else:
                 for c in node.named_children:
                     walk(c, stack)
 
         walk(tree.root_node, [])
+        imports.extend(_commonjs_imports(tree.root_node, source))
         return ParseResult(language=self.lang, symbols=symbols, imports=imports)
 
 

@@ -331,3 +331,122 @@ def test_activate_project(toolbox):
         assert toolbox.code_search("login")["root"] == str(WORK)
     finally:
         _rmtree(other)
+
+
+# ---------------- regression: 5 bugs found in the EduSpark audit ----------------
+
+def test_code_search_case_insensitive(toolbox):
+    """Upper/lower case must not decide the result (was: `=` is case-sensitive)."""
+    hits = toolbox.code_search("authservice")
+    names = {h["symbol"].lower() for h in hits["results"]}
+    assert "authservice" in names
+    hits = toolbox.code_search("AUTHSERVICE")
+    names = {h["symbol"].lower() for h in hits["results"]}
+    assert "authservice" in names
+
+
+def test_code_search_fts_works_for_docs(toolbox):
+    """FTS query must not be swallowed by a bad column name (was: 'no such column: fts')."""
+    hits = toolbox.code_search("auth service")
+    assert hits["count"] >= 1
+
+
+def test_file_symbols_basename(toolbox):
+    """Bare filename must resolve to the indexed file (was: exact path only)."""
+    syms = toolbox.file_symbols("service.py")
+    names = {s["symbol"] for s in syms["symbols"]}
+    assert "AuthService" in names
+
+
+def test_file_deps_ambiguous(toolbox):
+    """Multiple files sharing a basename report candidates instead of 'not found'."""
+    write(WORK / "src/other/service.py", "class Other:\n    pass\n")
+    toolbox._ensure_fresh()
+    deps = toolbox.file_deps("service.py")
+    assert deps["found"] is False
+    assert deps["ambiguous"] is True
+    assert len(deps["candidates"]) >= 2
+
+
+def test_rename_impact_import_sites(toolbox):
+    """rename_impact must surface import lines (was: only relations/qualified names)."""
+    imp = toolbox.rename_impact("AuthService")
+    files = {r["file"] for r in imp["references"]}
+    assert "src/auth/controller.py" in files  # imports AuthService
+    assert any(r["rtype"] == "import" for r in imp["references"])
+
+
+def test_trace_path_through_class_members(toolbox):
+    """trace_path must climb through a class's methods (was: died at __init__).
+
+    Chain: entry() -> Helper(func) -> Target().run(). Self-contained files so
+    earlier tests that rewrite shared sample files cannot poison the chain.
+    """
+    write(WORK / "src/chain/entry.py", '''\
+from chain.helper import Helper
+def entry():
+    return Helper().go()
+''')
+    write(WORK / "src/chain/helper.py", '''\
+from chain.target import Target
+class Helper:
+    def go(self):
+        t = Target()
+        return t.run()
+''')
+    write(WORK / "src/chain/target.py", '''\
+class Target:
+    def run(self):
+        return 42
+''')
+    toolbox._ensure_fresh()
+    path = toolbox.trace_path("entry", "Target.run")["path"]
+    assert path is not None
+    qnames = [p["qualified_name"] for p in path]
+    assert "Helper.go" in qnames
+    assert "Target.run" in qnames
+
+
+def test_module_variables_indexed(toolbox):
+    """Module-level `g = Thing()` must be a searchable symbol (was: dropped)."""
+    write(WORK / "src/gv.py", "from gv import G\n\nclass G:\n    pass\n\ninst = G()\n")
+    write(WORK / "src/consumer.py", "from gv import inst\n\ndef use():\n    return inst\n")
+    toolbox._ensure_fresh()
+    hits = toolbox.code_search("inst")
+    names = {h["symbol"] for h in hits["results"]}
+    assert "inst" in names
+
+
+def test_self_attr_dispatch_resolved(toolbox):
+    """`self.llm.chat()` must resolve to the owning class method even when
+    several classes define `chat` (was: ambiguous -> target_id NULL)."""
+    write(WORK / "src/llm/api.py", '''\
+class LLMClient:
+    def chat(self, msg):
+        return "ok"
+
+class Proxy:
+    def __init__(self):
+        self.llm = LLMClient()
+    def ask(self, msg):
+        return self.llm.chat(msg)
+''')
+    write(WORK / "src/llm/other.py", '''\
+class OtherLLM:
+    def chat(self, msg):
+        return "no"
+''')
+    toolbox._ensure_fresh()
+    path = toolbox.trace_path("Proxy", "LLMClient.chat")["path"]
+    assert path is not None
+    qnames = [p["qualified_name"] for p in path]
+    assert "LLMClient.chat" in qnames
+
+
+def test_code_search_import_hits(toolbox):
+    """Package names used only in imports (axios/pydantic) must surface."""
+    write(WORK / "src/uses_pkg.py", "import aiohttp_async\ndef f():\n    return aiohttp_async.get('x')\n")
+    toolbox._ensure_fresh()
+    hits = toolbox.code_search("aiohttp_async")
+    kinds = {h["kind"] for h in hits["results"]}
+    assert "import" in kinds

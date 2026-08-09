@@ -58,5 +58,32 @@ def split_identifier(text: str) -> list[str]:
     return [p for p in parts if p]
 
 
+def call_targets(fn, source: bytes, limit: int = 160) -> list[str]:
+    """Resolve a call_expression's function node to readable call targets.
+
+    Returns 1-2 target strings:
+    - the bare callee name (always);
+    - a dotted path (``a.b.c``) only when it is a *simple* member chain with no
+      nested calls and not a ``this.``/``self.`` keyword receiver.
+
+    This kills two classes of index noise:
+    - ``this.x()`` / ``self.x()`` previously emitted one edge for the bare name
+      and one for the keyword-qualified full path, duplicating every reference
+      and inflating rename_impact counts (A1);
+    - chained calls like ``db.query(X).filter(Y)`` built the full target from
+      inner call *argument* text, producing multi-line garbage that never
+      resolves to a symbol (A3).
+    """
+    text = node_text(fn, source, limit)
+    if not text:
+        return []
+    bare = text.rsplit(".", 1)[-1].split("(")[0].strip()
+    if not bare:
+        return []
+    if "." in text and "(" not in text and not text.startswith(("this.", "self.")):
+        return [bare, text]
+    return [bare]
+
+
 def display_line(line: int) -> str:
     return str(line + 1) if line >= 0 else "?"

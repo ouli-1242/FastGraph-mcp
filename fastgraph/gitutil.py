@@ -8,9 +8,12 @@ from pathlib import Path
 
 def git_root(root: Path) -> Path | None:
     try:
+        # text=True uses the locale encoding (GBK on Chinese Windows), which
+        # cannot decode git's UTF-8 output for non-ASCII paths and silently
+        # breaks every git-aware tool. Force UTF-8.
         out = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         if out.returncode == 0:
             return Path(out.stdout.strip())
@@ -26,9 +29,12 @@ def changed_files(root: Path) -> dict:
     if base is None:
         return changes
     try:
+        # core.quotepath=false: without it git quotes non-ASCII paths as octal
+        # escapes ("docs/\346\212\200..."), which then never match the DB paths.
+        # encoding=utf-8 mirrors git_root above (locale GBK would corrupt CJK).
         out = subprocess.run(
-            ["git", "-C", str(base), "status", "--porcelain", "--untracked-files=all"],
-            capture_output=True, text=True, timeout=15,
+            ["git", "-C", str(base), "-c", "core.quotepath=false", "status", "--porcelain", "--untracked-files=all"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15,
         )
     except Exception:
         return changes

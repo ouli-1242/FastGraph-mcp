@@ -26,7 +26,21 @@ FastGraph-MCP 是一个轻量级代码智能 MCP 服务器，补充 Serena 等�
 
 ```bash
 cd /path/to/FastGraph-mcp
-python -m pip install -e .        # editable 安装，改代码即时生效
+python -m pip install .            # 正式安装：代码复制进 site-packages，之后可删源码目录
+```
+
+**两种安装方式二选一：**
+
+| 方式 | 命令 | 适用 | 特点 |
+|---|---|---|---|
+| 正式版 | `python -m pip install .` | 日常使用 | 代码复制进 site-packages，**之后可以删除/移动源码文件夹**，更新时重新 install 即可；MCP 配置不依赖源码路径 |
+| 开发者版 | `python -m pip install -e .` | 改 FastGraph 代码 | editable 安装，改动即时生效，无需重装；但依赖源码文件夹保留 |
+
+如果先前装过 editable 版想切正式版：
+
+```bash
+python -m pip uninstall fastgraph-mcp   # 先卸掉 editable 记录
+python -m pip install .                 # 再装正式版
 ```
 
 **2. 配置 MCP（只需一次，全局即可）**

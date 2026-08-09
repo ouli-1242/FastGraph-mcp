@@ -68,9 +68,18 @@ class GoAdapter:
                 receiver = node.child_by_field_name("receiver")
                 parent = None
                 if receiver is not None:
-                    rname = receiver.named_children
-                    if rname:
-                        parent = node_text(rname[-1], source, 120)
+                    # receiver `(s *Service)` -> type_identifier `Service`.
+                    # (The naive receiver.named_children[-1] grabbed the whole
+                    # parameter_declaration, yielding "s *Service.Run".)
+                    def _receiver_type(n):
+                        for c in n.named_children:
+                            if c.type == "type_identifier":
+                                return node_text(c, source, 120)
+                            r = _receiver_type(c)
+                            if r:
+                                return r
+                        return None
+                    parent = _receiver_type(receiver)
                 params = node.child_by_field_name("parameters")
                 sym = SymbolInfo(
                     name=name, kind="method",

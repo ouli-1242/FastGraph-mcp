@@ -27,6 +27,15 @@ def _java_calls(node, source: bytes) -> list[CallRef]:
                     calls.append(CallRef(target=f"{obj_text.split('.')[-1]}.{target}", line=n.start_point[0] + 1))
                 else:
                     calls.append(CallRef(target=target, line=n.start_point[0] + 1))
+        elif n.type == "object_creation_expression":
+            # `new BizException(...)`: record the constructed type as a
+            # reference so impact_analysis/rename_impact see constructor sites
+            # (previously a class used by 100+ `new X()` calls reported 0).
+            t = n.child_by_field_name("type")
+            if t is not None:
+                target = node_text(t, source, 160).split(".")[-1]
+                if target:
+                    calls.append(CallRef(target=target, line=n.start_point[0] + 1))
         for c in n.named_children:
             walk(c, False)
 

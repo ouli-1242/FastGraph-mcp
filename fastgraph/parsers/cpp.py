@@ -60,7 +60,12 @@ class CppAdapter:
             elif t == "function_definition":
                 name_node = node.child_by_field_name("declarator")
                 name = ""
-                while name_node is not None and name_node.type != "identifier":
+                # Method names inside a class are `field_identifier` nodes
+                # (a top-level function's is `identifier`); accept both plus
+                # the typedef/struct forms, else class methods are dropped.
+                while name_node is not None and name_node.type not in (
+                    "identifier", "field_identifier", "type_identifier"
+                ):
                     name_node = name_node.child_by_field_name("declarator")
                 if name_node is not None:
                     name = node_text(name_node, source, 120)
@@ -76,9 +81,15 @@ class CppAdapter:
                     parent=parent, calls=_cpp_calls(node, source),
                 )
                 symbols.append(sym)
-            elif t == "class_specifier":
+            elif t in ("class_specifier", "struct_specifier", "union_specifier"):
+                kind = {"class_specifier": "class",
+                        "struct_specifier": "struct",
+                        "union_specifier": "union"}[t]
                 name_node = node.child_by_field_name("name")
                 name = node_text(name_node, source, 120)
+                if not name:
+                    # anonymous `struct { ... }` / `typedef struct { ... } Tag`
+                    return
                 parent = stack[-1].qualified_name if stack else None
                 bases: list[CallRef] = []
                 for c in node.named_children:
@@ -87,9 +98,9 @@ class CppAdapter:
                             if b.type == "type_identifier":
                                 bases.append(CallRef(target=node_text(b, source, 160), line=b.start_point[0] + 1, rtype="inherits"))
                 sym = SymbolInfo(
-                    name=name, kind="class",
+                    name=name, kind=kind,
                     qualified_name=parent + "." + name if parent else name,
-                    signature=f"class {name}", doc="",
+                    signature=f"{kind} {name}", doc="",
                     start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
                     start_col=node.start_point[1], end_col=node.end_point[1],
                     parent=parent, bases=bases,

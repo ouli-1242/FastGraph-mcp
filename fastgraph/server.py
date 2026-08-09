@@ -72,7 +72,7 @@ def build_server(root) -> MCPServer:
         return tools.find_callees(symbol, limit=limit, depth=depth, root=root)
 
     @server.tool()
-    def trace_path(from_symbol: str, to_symbol: str | None = None, depth: int = 3, root: str | None = None) -> dict:
+    def trace_path(from_symbol: str, to_symbol: str | None = None, depth: int = 20, root: str | None = None) -> dict:
         """Call chain between two symbols; without to_symbol returns the up-chain of callers. Optional root=<absolute path> for another project (desktop clients)."""
         return tools.trace_path(from_symbol, to_symbol, depth=depth, root=root)
 
