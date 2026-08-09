@@ -12,8 +12,10 @@ FastGraph-MCP 是一个轻量级代码智能 MCP 服务器，补充 Serena 等�
 
 ## 安装
 
+仓库即项目根，无需进入子目录：
+
 ```bash
-cd fastgraph
+cd D:\tools\FastGraph-mcp
 python -m pip install -e .        # 或 python -m pip install .
 ```
 
@@ -35,7 +37,7 @@ python -m pip install -e .        # 或 python -m pip install .
     "fastgraph": {
       "command": "python",
       "args": ["-m", "fastgraph", "--root", "/path/to/project"],
-      "cwd": "/path/to/fastgraph-repo"
+      "cwd": "D:\\tools\\FastGraph-mcp"
     }
   }
 }
@@ -50,7 +52,7 @@ python -m pip install -e .        # 或 python -m pip install .
       "type": "stdio",
       "command": "python",
       "args": ["-m", "fastgraph", "--root", "/path/to/project"],
-      "cwd": "/path/to/fastgraph-repo"
+      "cwd": "D:\\tools\\FastGraph-mcp"
     }
   }
 }
@@ -98,7 +100,7 @@ pip install -e ".[dev]"   # pytest
 python -m pytest tests/
 ```
 
-测试覆盖：索引、搜索、callers/callees、trace、impact、增量更新、git 变更感知。IPC 端到端测试见 `mcp_client_test.py`（临时）。
+测试覆盖：索引、搜索、callers/callees、trace、impact、增量更新、git 变更感知、Vue/Svelte 前端组件。
 
 ## 路线图
 
