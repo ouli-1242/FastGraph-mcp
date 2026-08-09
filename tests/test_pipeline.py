@@ -82,6 +82,12 @@ from auth.controller import LoginController
 def test_login_ok():
     assert LoginController().login({"username": "u", "password": "secret"}) is True
 ''')
+    write(root / "main.py", '''\
+from auth.controller import LoginController
+
+def run():
+    return LoginController().login({"username": "u", "password": "secret"})
+''')
 
 
 @pytest.fixture(scope="module")
@@ -141,9 +147,11 @@ def test_impact_high(toolbox):
 
 def test_project_overview(toolbox):
     ov = toolbox.project_overview()
-    assert ov["files"] == 6
+    assert ov["files"] == 7
     assert "python" in ov["languages"]
     assert "parse_errors" in ov
+    assert "main.py" in ov["entry_points"]
+    assert ov["layering"]
 
 
 def test_file_symbols(toolbox):
@@ -168,6 +176,16 @@ def test_rename_impact(toolbox):
     files = {r["file"] for r in imp["references"]}
     assert "src/auth/controller.py" in files  # call site
     assert "src/auth/service.py" in files     # OAuthService super() usage
+    assert "risk" in imp
+    assert imp["risk"]["grade"] in ("HIGH", "MEDIUM", "LOW")
+
+
+def test_rename_impact_risk(toolbox):
+    imp = toolbox.rename_impact("LoginController")
+    assert imp["risk"]["public_definitions"] >= 1
+    files = {r["file"] for r in imp["references"]}
+    assert "main.py" in files
+    assert "tests/test_auth.py" in files
 
 
 def test_type_hierarchy(toolbox):
@@ -185,7 +203,7 @@ def test_incremental_update(toolbox):
     write(WORK / "src/auth/service.py", "class AuthService:\n    def login(self):\n        return True\n")
     stats = toolbox._ensure_fresh()
     assert stats["parsed"] == 1
-    assert stats["scanned"] == 6
+    assert stats["scanned"] == 7
     # symbol still found, new shape
     info = toolbox.symbol_info("AuthService.login")
     assert info["found"]

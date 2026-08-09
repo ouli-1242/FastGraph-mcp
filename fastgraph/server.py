@@ -80,7 +80,7 @@ def build_server(root) -> MCPServer:
 
     @server.tool()
     def rename_impact(symbol: str, limit: int = 100) -> dict:
-        """Rename preview: every definition + reference site of `symbol`."""
+        """Change risk: every definition + reference site of `symbol`, graded HIGH/MEDIUM/LOW."""
         return tools.rename_impact(symbol, limit=limit)
 
     @server.tool()

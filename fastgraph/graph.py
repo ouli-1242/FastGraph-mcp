@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import deque
+from pathlib import Path
 
 from fastgraph.db import DB
 
@@ -326,12 +327,50 @@ def project_overview(db: DB) -> dict:
                 "WHERE instr(path, '/') > 0 GROUP BY 1 ORDER BY 2 DESC LIMIT 15"
             )
         },
+        "entry_points": _entry_points(db),
+        "layering": _layering(db),
         "parse_errors": [e["file"] for e in db.parse_errors(limit=50)],
     }
 
 
+_ENTRY_NAMES = {
+    "main.py", "__main__.py", "app.py", "cli.py", "manage.py", "serve.py",
+    "app.ts", "index.ts", "index.js", "index.tsx", "index.jsx", "main.ts", "main.go", "main.rs",
+}
+
+
+def _entry_points(db: DB) -> list[str]:
+    """Files conventionally treated as entry points (main/app/index/cli)."""
+    out: list[str] = []
+    for (p,) in db.conn.execute("SELECT path FROM files ORDER BY path"):
+        if Path(p).name in _ENTRY_NAMES and not p.startswith("test") and "test" not in p.lower():
+            out.append(p)
+    return out[:10]
+
+
+def _layering(db: DB) -> dict:
+    """Top-level dependency direction summary: dir A -> dir B counts."""
+    counts: dict[str, int] = {}
+    row_map = {r[0]: r[1] for r in db.conn.execute("SELECT id, path FROM files")}
+    # use file-level imports instead: module -> module edges
+    pairs: dict[tuple[str, str], int] = {}
+    for (fid, text) in db.conn.execute("SELECT file_id, text FROM file_imports"):
+        src = row_map.get(fid)
+        if not src:
+            continue
+        src_top = src.split("/")[0] if "/" in src else "(root)"
+        for cand in import_targets(db, text, src):
+            tgt_top = cand.split("/")[0] if "/" in cand else "(root)"
+            if src_top != tgt_top and "/" in cand:
+                k = (src_top, tgt_top)
+                pairs[k] = pairs.get(k, 0) + 1
+    for (a, b), n in sorted(pairs.items(), key=lambda kv: -kv[1])[:10]:
+        counts[f"{a} -> {b}"] = n
+    return counts
+
+
 def rename_impact(db: DB, name: str, limit: int = 100) -> dict:
-    """Every definition + every reference of a symbol, for rename preview.
+    """Rename/change risk: every definition + every reference of a symbol.
 
     Uses both resolved relations (calls/inherits) and raw import text.
     """
@@ -374,12 +413,45 @@ def rename_impact(db: DB, name: str, limit: int = 100) -> dict:
         ):
             refs.append({"symbol": r[0], "file": r[4], "line": r[3], "rtype": "uses", "via": r[2][:60]})
 
+    risk = _risk_grade(defs, refs)
     return {
         "symbol": name,
         "definitions": [_brief(s) for s in defs],
         "references": refs[:limit],
         "definition_count": len(defs),
         "reference_count": len(refs),
+        "risk": risk,
+    }
+
+
+def _risk_grade(defs: list[dict], refs: list[dict]) -> dict:
+    """Risk hints for symbol-level change: HIGH/MEDIUM/LOW + breakdown.
+
+    HIGH = public API (class/interface/struct) with many callers or tests.
+    MEDIUM = internal with test coverage. LOW = leaf/internal usage only.
+    """
+    public_kinds = {"class", "interface", "struct", "enum", "impl", "type", "delegate"}
+    has_public_def = any(d.get("kind") in public_kinds for d in defs)
+    tests = sum(1 for r in refs if "test" in r.get("file", "").lower() or "spec" in r.get("file", "").lower())
+    callers = sum(1 for r in refs if r.get("rtype") in ("calls", "uses"))
+    n = len(refs)
+
+    if has_public_def and (callers or tests):
+        grade = "HIGH"
+    elif has_public_def or (tests and n):
+        grade = "MEDIUM"
+    else:
+        grade = "LOW"
+
+    return {
+        "grade": grade,
+        "public_definitions": sum(1 for d in defs if d.get("kind") in public_kinds),
+        "reference_sites": n,
+        "test_sites": tests,
+        "hint": (
+            f"{grade} risk: {n} reference sites, {tests} in tests"
+            + (", public API" if has_public_def else ", internal")
+        ),
     }
 
 

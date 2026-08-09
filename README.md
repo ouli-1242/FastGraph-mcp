@@ -5,10 +5,26 @@
 
 FastGraph-MCP 是一个轻量级代码智能 MCP 服务器，补充 Serena 等编辑型 MCP 所缺的**项目级检索、调用图、影响分析与变更感知**。设计定位是"高速代码导航层"：
 
-- **快**：首次索引一个中型项目数秒~十几秒；查询 <10ms；**增量更新只重解析改动文件**，编辑保存后无需全量重建
-- **轻**：无 embedding 模型、无图数据库、无 LSP，常驻内存 ~3MB（峰值 <50MB）
+- **快**：首次索引中型项目数秒~十几秒（实测 525 文件 17.8s）；典型查询 <100ms；**增量更新只重解析改动文件**，编辑保存后无需全量重建
+- **轻**：无 embedding 模型、无图数据库、无 LSP；常驻内存 <50MB（实测 525 文件峰值 43MB）
 - **省 Context**：所有工具只返回 `file / symbol / line / relation`，绝不返回文件正文
 - **补 Serena**：全局符号搜索、call graph、impact_analysis、git diff 变更意识、项目架构概览
+
+## Agent 决策表（用哪个工具）
+
+| 场景 | 用法 |
+| --- | --- |
+| 陌生代码库，先了解全局 | `project_overview`（语言/顶层布局/入口/依赖方向/解析失败文件） |
+| 不知道某段代码在哪 | `code_search` |
+| 想知道一个符号是什么 | `symbol_info` |
+| 准备读某个文件 | `file_symbols`（先看结构再决定要不要全文读） |
+| 谁在调用/它调用谁 | `find_callers` / `find_callees` |
+| 两个符号之间有无调用链 | `trace_path` |
+| **准备修改前**：影响面 + 风险 | `impact_analysis` + `rename_impact`（风险分级/改名预览） |
+| 文件级依赖、改 import 影响 | `file_deps` |
+| 继承关系 | `type_hierarchy` |
+| 刚改完代码 | `changed_context`（git diff + 受影响调用者） |
+| 读/改正文 | 交给 Serena（FastGraph 不碰文件内容） |
 
 ## 安装
 
@@ -71,10 +87,10 @@ python -m pip install -e .        # 或 python -m pip install .
 | `trace_path(from, to?)` | 调用链（缺省返回向上链条） | 路径符号列表 |
 | `impact_analysis(symbol, max_depth?)` | **核心**：反向 BFS 影响面，HIGH/MEDIUM 分级，测试文件单列 | 风险分组 |
 | `changed_context()` | **Git 感知**：diff → 变更符号 → 受调用者 | 变更快照 + 影响 |
-| `project_overview()` | 项目语言/文件/符号统计 + 顶层布局 + 解析失败文件 | 概览 |
+| `project_overview()` | 项目统计 + 顶层布局 + **入口文件 + 依赖方向** + 解析失败文件 | 概览 |
 | `file_symbols(path)` | 单文件全部符号（行号区间/kind/签名），不读正文即可理解文件 | symbol 列表 |
 | `file_deps(path)` | **文件级依赖**：import 了什么、被谁 import | 依赖导出/导入面 |
-| `rename_impact(symbol)` | **改名预览**：所有定义点 + 所有引用点（含 unresolved 裸名调用） | 定义/引用清单 |
+| `rename_impact(symbol)` | **变更风险**：定义/引用清单 + HIGH/MEDIUM/LOW 分级（公开 API、测试占用数） | 定义/引用 + risk |
 | `type_hierarchy(symbol)` | **继承层级**：祖先类 + 子类（BFS） | 层级列表 |
 
 ## 与 Serena 分工
@@ -96,7 +112,7 @@ FastGraph 不实现 LSP / rename / edit / refactor（那是 Serena 的职责）�
 ## 与 Serena 的编排
 
 ```
-改名前    rename_impact(symbol)   → 预览影响面，再调 Serena rename_symbol
+改名前    rename_impact(symbol)   → 风险分级（公开 API/测试面），再调 Serena rename_symbol
 理解文件  file_symbols(path)      → 不读正文先看结构
 文件依赖  file_deps(path)         → 改的是 API 还是内部实现
 继承关系  type_hierarchy(symbol)  → 改基类前的族谱风险
