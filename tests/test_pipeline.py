@@ -300,3 +300,34 @@ def test_optional_root_invalid(toolbox):
         raise AssertionError("expected ValueError for missing root dir")
     except ValueError:
         pass
+
+
+def test_activate_project(toolbox):
+    """Serena-style session activation: switch default root, then tools run against it."""
+    other = WORK.parent / "activated_work"
+    write(other / "main.py", "def activated_fn():\n    pass\n")
+    try:
+        res = toolbox.activate_project(str(other))
+        assert res["ok"] and res["active_root"] == str(other.resolve())
+
+        hits = toolbox.code_search("activated_fn")
+        assert hits["root"] == str(other.resolve())
+        assert hits["count"] == 1
+
+        ov = toolbox.project_overview()
+        assert ov["root"] == str(other.resolve())
+
+        # explicit root still overrides the active one
+        assert toolbox.code_search("login", root=str(WORK))["root"] == str(WORK)
+
+        # invalid activation is rejected without breaking the active root
+        bad = toolbox.activate_project(str(WORK.parent / "nope"))
+        assert not bad["ok"]
+        assert toolbox.code_search("activated_fn")["count"] == 1
+
+        # deactivate back to the default
+        back = toolbox.activate_project(None)
+        assert back["ok"] and back["active_root"] == str(WORK)
+        assert toolbox.code_search("login")["root"] == str(WORK)
+    finally:
+        _rmtree(other)

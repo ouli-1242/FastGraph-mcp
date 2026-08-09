@@ -24,13 +24,35 @@ class Toolbox:
         self.root = root
         self.db = db
         self.indexer = indexer
+        self._active_root: Path | None = None
         self._roots: dict[Path, "Toolbox"] = {}
 
     # ------------------------------------------------------------- helpers
 
+    def activate_project(self, root: str | None) -> dict:
+        """Set the session-wide default project root (Serena-style activation).
+
+        Works without any prior state, so desktop agents can point the server
+        at the folder they are working on. Returns a description of what the
+        new active root indexes.
+        """
+        path = Path(root).resolve() if root else self.root.resolve()
+        if not path.is_dir():
+            return {"ok": False, "error": f"root {path} is not an existing directory", "active_root": str(self._active_root) if self._active_root else str(self.root)}
+        if path == self.root.resolve():
+            self._active_root = None
+        else:
+            if path not in self._roots:
+                db = DB(path)
+                self._roots[path] = Toolbox(path, db, Indexer(path, db))
+            self._active_root = path
+        return {"ok": True, "active_root": str(self._active_root or self.root)}
+
     def _for_root(self, root: str | None):
-        """Return the toolbox for ``root`` (default: this one)."""
+        """Return the toolbox for ``root`` (default: active root, else this one)."""
         if root is None:
+            if self._active_root is not None and self._active_root != self.root.resolve():
+                return self._roots[self._active_root]
             return self
         path = Path(root).resolve()
         if path == self.root.resolve():

@@ -74,15 +74,16 @@ OpenCode（`opencode.json`）：
 | --- | --- | --- |
 | 打开哪个项目就用哪个（推荐） | `python -m fastgraph` | 客户端从当前项目目录启动 server |
 | 固定分析某个目录 | `python -m fastgraph --root D:/work/my-project` | `--root` 显式指定后不做自动探测 |
-| 桌面客户端按调用切项目 | 工具传 `root="D:/my/project"` 参数 | 可选参数,所有 12 个工具支持;不传用默认 root |
-| 固定分析 + 不改参数（桌面客户端） | 配置 `env`：`FASTGRAPH_ROOT: "D:/tools"` | 环境变量等效 `--root`,优先级低于 `--root`、高于自动探测 |
+| 桌面客户端（Claude Desktop 等） | 先调 `activate_project(root="D:/my/project")` | Serena 同款：会话内激活项目，之后所有工具自动指向它；换项目再调一次 |
+| 单次跨项目查询 | 工具传 `root="D:/my/project"` 可选参数 | 不传用激活的/默认 root |
+| 固定分析 + 不改参数（桌面客户端） | 配置 `env`：`FASTGRAPH_ROOT: "D:/tools"` | 环境变量等效 `--root`，优先级低于 `--root`、高于自动探测 |
 | 同时分析多个项目 | 复制整段配置，每个用不同名字 + `--root`；或单实例用 `root=` 参数切 | 一次只能挂一个实例 |
 
 > 命令行放入客户端配置的写法随客户端而异：Claude Code 拆成 `command` + `args` 数组（见上方快速开始）；OpenCode 把整条命令行放进 `command` 数组（如 `["python", "-m", "fastgraph", "--root", "D:/work/my-project"]`）、`type` 用 `"local"`、并需 `enabled: true`。
 
 > ⚠️ 两个路径**完全不同**：`--root` 是要被索引的**目标项目**；`cwd` 是 **FastGraph 仓库自身**（未安装时兜底 import）。最容易犯的错：把两者填成同一个目录，结果把 FastGraph 源码当成了索引对象——已安装时 `cwd` 可省略。
 
-> 💡 **桌面客户端（Claude Desktop 等）**：它们以固定工作目录（如 `C:\Windows\System32`）启动 MCP 进程，零配置模式永远探测不到项目。**所有工具都支持可选 `root` 参数**（绝对路径），不传时用默认 root（探测/env/`--root`）——桌面版请让 Agent 在每次调用时带上 `root`（Serena 同款用法），例如 `project_overview(root="C:/my/project")`。路径不可写时（如 System32）默认 root 自动回退到用户主目录并打印 notice。
+> 💡 **桌面客户端（Claude Desktop 等）**：它们以固定工作目录（如 `C:\Windows\System32`）启动 MCP 进程，零配置探测永远拿不到项目。解法与 Serena 相同——先调 **`activate_project(root="C:/my/project")`** 会话内激活项目，之后所有工具自动指向它；换文件夹时再调一次即可。每个工具也支持可选 `root` 参数做单次跨项目查询（不传用激活的/默认 root）。路径不可写时默认 root 自动回退用户主目录并打印 notice。
 
 ### 注意事项
 
@@ -98,6 +99,7 @@ OpenCode（`opencode.json`）：
 
 | 任务 | 工具 | 说明 |
 | --- | --- | --- |
+| 桌面版先激活当前项目 | `activate_project(root)` | Serena 同款：会话内指定项目根，之后工具自动指向它 |
 | 陌生代码库，先了解全局 | `project_overview()` | 语言/顶层布局/入口/依赖方向/解析失败文件 |
 | 不知道某段代码在哪 | `code_search(query, kind?, limit)` | 自然语言/关键词（精确名 > FTS 前缀 > doc） |
 | 想知道一个符号是什么 | `symbol_info(symbol)` | 定位符号（支持 `A.B.foo`），含签名/doc/callee 摘要 |

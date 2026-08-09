@@ -28,6 +28,10 @@ def build_server(root) -> MCPServer:
             "Return locations, symbols and relationships by default."
             "Only include source snippets when explicitly requested or necessary."
             "Pick tool by task:\n"
+            "- FIRST: if working on a project folder OTHER than the server default, call "
+            "activate_project(root=\"<absolute path>\") to point the server at it (Serena-style; "
+            "no other tool needs the path afterwards). When unsure about the current root, call "
+            "project_overview() and check its root field.\n"
             "- new to repo / big picture: project_overview() (entry points, top-level layout, "
             "cross-module dependency direction, parse errors)\n"
             "- find where a symbol/feature lives: code_search()\n"
@@ -41,6 +45,11 @@ def build_server(root) -> MCPServer:
             "Output size discipline: prefer limit=10-20; Prioritize relevance over completeness.; Avoid flooding context with low-value results.; results are compact by design."
         ),
     )
+
+    @server.tool()
+    def activate_project(root: str) -> dict:
+        """Point the server at a project folder for this session (Serena-style). Use BEFORE other tools when the folder you work in differs from the server default; afterwards tools run against the activated root."""
+        return tools.activate_project(root)
 
     @server.tool()
     def code_search(query: str, limit: int = 10, kind: str | None = None, root: str | None = None) -> dict:
