@@ -22,21 +22,30 @@ FastGraph-MCP 是一个轻量级代码智能 MCP 服务器，补充 Serena 等�
 
 ## 快速开始（5 分钟）
 
-**1. 安装（只需一次）**
+**1. 安装（只需一次，二选一）**
+
+### 方式一：正式安装（日常使用）
 
 ```bash
 cd /path/to/FastGraph-mcp
-python -m pip install .            # 正式安装：代码复制进 site-packages，之后可删源码目录
+python -m pip install .
 ```
 
-**两种安装方式二选一：**
+- 代码复制进 `site-packages`，之后可以删除/移动源码文件夹
+- 更新时重新 `pip install .` 即可
+- MCP 配置不依赖源码路径
 
-| 方式 | 命令 | 适用 | 特点 |
-|---|---|---|---|
-| 正式版 | `python -m pip install .` | 日常使用 | 代码复制进 site-packages，**之后可以删除/移动源码文件夹**，更新时重新 install 即可；MCP 配置不依赖源码路径 |
-| 开发者版 | `python -m pip install -e .` | 改 FastGraph 代码 | editable 安装，改动即时生效，无需重装；但依赖源码文件夹保留 |
+### 方式二：开发者安装（要改 FastGraph 源码）
 
-如果先前装过 editable 版想切正式版：
+```bash
+cd /path/to/FastGraph-mcp
+python -m pip install -e .
+```
+
+- editable 安装，改动即时生效，无需重装
+- 依赖源码文件夹保留（不能删）
+
+安装方式切换：从 editable 切回正式版，先卸掉 editable 记录再装：
 
 ```bash
 python -m pip uninstall fastgraph-mcp   # 先卸掉 editable 记录
@@ -109,27 +118,44 @@ OpenCode（`opencode.json`）：
 - **非 Claude Code / OpenCode**（Cursor、Zed、VS Code MCP 插件等）：同是 stdio MCP，但字段命名按各自 schema（有的拆 `command`+`args`，有的用整条命令数组），套用上表命令行即可
 - 配置后建议跑一次任意工具（如 `project_overview`），确认 stdout 是 MCP 协议而非报错
 
+#### 性能诊断（可选）：`FASTGRAPH_DEBUG`
+
+默认工具响应很短，`refresh` 统计只在索引真正重解析/报错时出现。排查查询/索引性能时，可在 MCP 配置的 `env` 里加：
+
+```json
+{
+  "mcpServers": {
+    "fastgraph": {
+      "command": "python",
+      "args": ["-m", "fastgraph"],
+      "env": { "FASTGRAPH_DEBUG": "1" }
+    }
+  }
+}
+```
+
+打开后**每次工具响应都带 `refresh` 统计**（`scanned` / `parsed` / `deleted` / `errors` / `refresh_ms`），其中 `refresh_ms` 是每次调用前的索引增量检查耗时（查询的主要开销来源）。平时不用开，定位慢查询时再开。
+
 ## 工具速查（13 个）
 
 按任务选工具：
 
 | 任务 | 工具 | 说明 |
 | --- | --- | --- |
-| 桌面版先激活当前项目 | `activate_project(root)` | Serena 同款：会话内指定项目根，之后工具自动指向它 |
-| 陌生代码库，先了解全局 | `project_overview()` | 语言/顶层布局/入口/依赖方向/解析失败文件 |
-| 不知道某段代码在哪 | `code_search(query, kind?, limit)` | 自然语言/关键词（精确名 > FTS 前缀 > doc） |
-| 想知道一个符号是什么 | `symbol_info(symbol)` | 定位符号（支持 `A.B.foo`），含签名/doc/callee 摘要 |
-| 准备读某个文件 | `file_symbols(path)` | 先看结构再决定要不要全文读 |
-| 谁在调用 / 它调用谁 | `find_callers(symbol, depth?)` / `find_callees(symbol, depth?)` | BFS 可传递 |
-| 两个符号之间有无调用链 | `trace_path(from, to?)` | 缺省返回向上链条 |
-| 继承关系 | `type_hierarchy(symbol)` | 祖先类 + 子类（BFS） |
-| **准备修改前**：影响面 | `impact_analysis(symbol, max_depth?)` | 反向 BFS，HIGH/MEDIUM 分级，测试文件单列 |
-| **准备改名**：风险评估 | `rename_impact(symbol)` | 定义/引用清单 + HIGH/MEDIUM/LOW 分级（公开 API、测试占用数） |
-| 文件级依赖、改 import 影响 | `file_deps(path)` | import 了什么、被谁 import |
-| 刚改完代码 | `changed_context()` | git diff → 变更符号 → 受调用者 |
-| 读/改正文 | 交给 Serena | FastGraph 不碰文件内容 |
+| 先激活当前项目（桌面端必调） | `activate_project(root)` | 之后所有工具指向该文件夹；每个工具也可传 `root=` 做单次跨项目查询 |
+| 陌生代码库，先看全局 | `project_overview()` | 语言/文件符号数/入口点/顶层布局/跨模块依赖方向/解析失败文件 |
+| 不知道某段代码在哪 | `code_search(query, kind?, limit?)` | 按关键词/符号名/自然语言定位代码 |
+| 想知道一个符号是什么 | `symbol_info(symbol)` | 文件、行号、签名、doc、它调用了谁（支持 `Class.method`） |
+| 准备读某个文件 | `file_symbols(path)` | 文件内符号清单（kind/签名/行号），先看结构再决定读不读全文 |
+| 谁在调用 / 它调用谁 | `find_callers(symbol)` / `find_callees(symbol)` | `depth>=2` 返回多级调用者/完整下游调用树 |
+| 两个符号之间有无调用链 | `trace_path(from, to?)` | 不给 `to` 返回 `from` 的调用者链 |
+| 继承关系 | `type_hierarchy(symbol)` | 祖先类 + 子类，改基类前查 |
+| 改代码前：影响面 | `impact_analysis(symbol, max_depth?)` | 直接调用者(HIGH)/间接(MEDIUM)/测试单列 |
+| 改名之前：风险评估 | `rename_impact(symbol)` | 全部定义 + 引用点，HIGH/MEDIUM/LOW 分级 |
+| 改 import 前 | `file_deps(path)` | import 了什么（内部 `imports` / 外部 `external_imports` 分开）、被谁 import |
+| 刚改完代码 | `changed_context()` | git diff → 变更文件/符号 → 受影响的调用者 |
 
-输出统一为 `symbol / file / line / relation`，绝不含文件正文。
+输出统一为 `symbol / file / line / relation`，绝不含文件正文。稳态调用不返回 `refresh`/`ms` 遥测（省 context）；只有索引真正重解析/报错时才带 `refresh` 统计。
 
 ## 与 Serena 分工
 

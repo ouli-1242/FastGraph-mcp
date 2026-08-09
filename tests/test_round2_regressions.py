@@ -316,3 +316,75 @@ def test_fts_doc_search_works(tmp_root):
         for h in hits["results"]
     ), hits
     db.close()
+
+
+# ---------------- return-surface design (round 3) ----------------
+
+def test_steady_state_output_omits_refresh_and_ms(tmp_root):
+    """After the initial index, tool output must not carry per-call telemetry
+    (refresh/ms) — it is pure noise for the agent."""
+    files = {"a.py": "def alpha():\n    return 1\n"}
+    db, ix, tb = _build(tmp_root, files)
+    tb.code_search("alpha")  # first call does the full index
+    out = tb.code_search("alpha")
+    assert "ms" not in out, out
+    assert "refresh" not in out, out
+    assert "root" in out, out
+    db.close()
+
+
+def test_refresh_present_when_parse_happens(tmp_root):
+    """The gated refresh block must appear when a call actually re-parses."""
+    files = {"a.py": "def alpha():\n    return 1\n"}
+    db, ix, tb = _build(tmp_root, files)
+    tb.code_search("alpha")
+    (tmp_root / "a.py").write_text("def alpha():\n    return 2\n", encoding="utf-8")
+    out = tb.code_search("alpha")
+    assert "refresh" in out, out
+    assert out["refresh"]["parsed"] >= 1, out
+    db.close()
+
+
+def test_rename_impact_reference_keys_consistent(tmp_root):
+    """Every reference row must use the same key (via_text), not a mix of
+    via_text / via."""
+    files = {
+        "mod.py": "def alpha():\n    return 1\n",
+        "main.py": "from mod import alpha\n\ndef go():\n    return alpha()\n",
+    }
+    db, ix, tb = _build(tmp_root, files)
+    imp = tb.rename_impact("alpha")
+    for r in imp["references"]:
+        assert "via_text" in r, r
+        assert "via" not in r, r
+    db.close()
+
+
+def test_file_deps_splits_internal_and_external(tmp_root):
+    files = {
+        "pkg/thing.py": "def f():\n    return 1\n",
+        "main.py": "import os\nfrom pkg.thing import f\n",
+    }
+    db, ix, tb = _build(tmp_root, files)
+    deps = tb.file_deps("main.py")
+    assert all(i["resolves_to"] for i in deps["imports"]), deps["imports"]
+    assert any("os" in i["text"] for i in deps["external_imports"]), deps["external_imports"]
+    db.close()
+
+
+def test_fastgraph_debug_env_restores_refresh(monkeypatch, tmp_root):
+    """FASTGRAPH_DEBUG=1 must restore per-call refresh stats (perf diagnosis)."""
+    files = {"a.py": "def alpha():\n    return 1\n"}
+    # steady state: no refresh
+    db, ix, tb = _build(tmp_root, files)
+    tb.code_search("alpha")
+    assert "refresh" not in tb.code_search("alpha")
+    db.close()
+    # debug mode: refresh always present
+    monkeypatch.setenv("FASTGRAPH_DEBUG", "1")
+    db2, ix2, tb2 = _build(tmp_root, files)
+    tb2.code_search("alpha")
+    out = tb2.code_search("alpha")
+    assert "refresh" in out, out
+    assert "refresh_ms" in out["refresh"], out
+    db2.close()

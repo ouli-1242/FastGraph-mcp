@@ -173,8 +173,12 @@ def test_file_symbols(toolbox):
 def test_file_deps(toolbox):
     deps = toolbox.file_deps("src/auth/service.py")
     assert deps["found"]
-    assert any("user.repo" in i["text"] for i in deps["imports"])
+    # unresolved import (no such module in project) -> external_imports
+    assert any("user.repo" in i["text"] for i in deps["external_imports"])
     assert any(i["file"] == "src/auth/controller.py" for i in deps["importers"])
+    # internal import resolves to a file
+    deps_ctl = toolbox.file_deps("src/auth/controller.py")
+    assert any(i["resolves_to"] for i in deps_ctl["imports"])
 
 
 def test_rename_impact(toolbox):

@@ -595,7 +595,7 @@ def rename_impact(db: DB, name: str, limit: int = 100) -> dict:
                ORDER BY f.path, s.start_line LIMIT ?""",
             (name, f"%.{name}", limit),
         ):
-            refs.append({"symbol": r[0], "file": r[4], "line": r[3], "rtype": "uses", "via": r[2][:60]})
+            refs.append({"symbol": r[0], "file": r[4], "line": r[3], "rtype": "uses", "via_text": r[2][:60]})
 
     # 3) import statements that actually bind the symbol's name (e.g.
     #    `from app.agents.orchestrator import orchestrator` when renaming
@@ -615,7 +615,7 @@ def rename_impact(db: DB, name: str, limit: int = 100) -> dict:
         imported = _imported_names(r[0])
         if not any(name.lower() in n.lower() for n in imported):
             continue
-        refs.append({"symbol": name, "file": r[2], "line": r[1], "rtype": "import", "via": r[0][:60]})
+        refs.append({"symbol": name, "file": r[2], "line": r[1], "rtype": "import", "via_text": r[0][:60]})
         if len(refs) >= limit:
             break
 
