@@ -87,7 +87,9 @@ FastGraph 不实现 LSP / rename / edit / refactor（那是 Serena 的职责）�
 
 ## 支持语言
 
-Python、TypeScript/TSX、JavaScript、Go、Rust、Java、C/C++（`.c/.h/.cpp/.cc/.hpp`）
+Python、TypeScript/TSX、JavaScript、**Vue (`.vue`)、Svelte (`.svelte`)**、Go、Rust、Java、C/C++（`.c/.h/.cpp/.cc/.hpp`）
+
+Vue/Svelte 通过提取 `<script>` 块解析（支持 `lang="ts"`），符号行号对齐原始 `.vue/.svelte` 文件；JSX/TSX 直接支持。
 
 ## 开发
 

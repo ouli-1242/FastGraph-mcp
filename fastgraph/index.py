@@ -17,6 +17,7 @@ _EXT_LANG = {
     ".py": "python",
     ".ts": "typescript", ".tsx": "tsx", ".mts": "typescript", ".cts": "typescript",
     ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
+    ".vue": "vue", ".svelte": "svelte",
     ".go": "go",
     ".rs": "rust",
     ".java": "java",
@@ -245,15 +246,4 @@ def _class_hint(qname: str) -> str:
     parts = qname.split(".")
     return parts[0].lower() if parts else ""
 
-
-_EXT_LANG = {
-    ".py": "python",
-    ".ts": "typescript", ".tsx": "tsx", ".mts": "typescript", ".cts": "typescript",
-    ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
-    ".go": "go",
-    ".rs": "rust",
-    ".java": "java",
-    ".c": "cpp", ".h": "cpp", ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp",
-    ".hpp": "cpp", ".hh": "cpp", ".hxx": "cpp",
-}
 
