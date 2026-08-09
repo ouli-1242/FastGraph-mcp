@@ -30,6 +30,42 @@ def detect_root(start: Path) -> Path:
         cur = parent
 
 
+def _writable(path: Path) -> bool:
+    """True if a `.fastgraph` index dir can be created under ``path``."""
+    try:
+        probe = path / ".fastgraph_probe"
+        probe.mkdir(parents=True, exist_ok=True)
+        probe.rmdir()
+        return True
+    except OSError:
+        return False
+
+
+def resolve_root(start: Path) -> Path:
+    """Root to index: nearest git root above ``start`` if writable.
+
+    Falls back through ancestors to the first writable dir (desktop apps
+    launch stdio servers with cwd=C:\\Windows\\System32 etc., which is not
+    writable); final fallback is the user home dir. Prints a hint to stderr
+    whenever the detected root is not `start` itself.
+    """
+    from os import getenv
+
+    home = Path(getenv("USERPROFILE") or Path.home())
+    root = detect_root(start)
+    if not _writable(root):
+        # Desktop apps launch stdio servers with cwd=C:\Windows\System32 etc.
+        # - not writable. Prefer the user home over climbing to a system root.
+        print(
+            f"notice: {root} is not writable, falling back to {home}",
+            file=sys.stderr,
+        )
+        root = home
+    elif root != start:
+        print(f"notice: indexing git root {root} (cwd: {start})", file=sys.stderr)
+    return root
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="fastgraph",
@@ -43,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    root = detect_root(args.root or Path.cwd()).resolve()
+    root = resolve_root(args.root or Path.cwd())
     if not root.is_dir():
         print(f"error: {root} is not a directory", file=sys.stderr)
         return 1
