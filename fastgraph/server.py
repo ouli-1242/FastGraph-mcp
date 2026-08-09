@@ -43,9 +43,9 @@ def build_server(root) -> MCPServer:
     )
 
     @server.tool()
-    def code_search(query: str, limit: int = 10, kind: str | None = None) -> dict:
-        """Find where code lives by keywords/natural language. First choice when you don't know the symbol name."""
-        return tools.code_search(query, limit=limit, kind=kind)
+    def code_search(query: str, limit: int = 10, kind: str | None = None, root: str | None = None) -> dict:
+        """Find where code lives by keywords/natural language. First choice when you don't know the symbol name. Optional root=<absolute path> searches another project (desktop clients)."""
+        return tools.code_search(query, limit=limit, kind=kind, root=root)
 
     @server.tool()
     def symbol_info(symbol: str) -> dict:
@@ -78,9 +78,9 @@ def build_server(root) -> MCPServer:
         return tools.changed_context(limit=limit)
 
     @server.tool()
-    def project_overview() -> dict:
-        """Project map: languages, file/symbol counts, entry points, top-level layout, cross-module dependency direction, parse errors."""
-        return tools.project_overview()
+    def project_overview(root: str | None = None) -> dict:
+        """Project map: languages, file/symbol counts, entry points, top-level layout, cross-module dependency direction, parse errors. Optional root=<absolute path> for another project (desktop clients)."""
+        return tools.project_overview(root=root)
 
     @server.tool()
     def file_symbols(path: str, limit: int = 200) -> dict:

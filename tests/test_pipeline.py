@@ -17,6 +17,15 @@ SAMPLE = Path(__file__).resolve().parent / "sample_project"
 WORK = Path(__file__).resolve().parent / "work"
 
 
+def _rmtree(path: Path):
+    """shutil.rmtree that also clears read-only flags (git object files on win32)."""
+    if not path.exists():
+        return
+    for p in path.rglob("*"):
+        p.chmod(p.stat().st_mode | 0o200)
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def write(path: Path, content: str):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -92,8 +101,7 @@ def run():
 
 @pytest.fixture(scope="module")
 def toolbox():
-    if WORK.exists():
-        shutil.rmtree(WORK)
+    _rmtree(WORK)
     WORK.mkdir(parents=True)
     build_sample(WORK)
     db = DB(WORK)
@@ -102,7 +110,7 @@ def toolbox():
     indexer.refresh()
     yield tools
     db.close()
-    shutil.rmtree(WORK, ignore_errors=True)
+    _rmtree(WORK)
 
 
 def test_code_search(toolbox):
@@ -231,3 +239,25 @@ def test_changed_context_git(toolbox):
     res = toolbox.changed_context()
     assert "src/auth/service.py" in res["changed_files"]
     assert res["changed_symbols"]
+
+
+def test_optional_root_param(toolbox):
+    """root= switches the query to another project; default keeps this one."""
+    default = toolbox.code_search("login")
+    assert default["root"] == str(WORK)
+
+    other = WORK.parent / "other_work"
+    write(other / "main.py", "def hello():\n    return 1\n")
+    try:
+        res = toolbox.code_search("hello", root=str(other))
+        assert res["root"] == str(other.resolve())
+        assert res["count"] == 1
+        assert res["results"][0]["symbol"] == "hello"
+    finally:
+        _rmtree(other)
+
+    back = toolbox.code_search("login")
+    assert back["root"] == str(WORK)
+
+    ov = toolbox.project_overview(root=str(WORK))
+    assert ov["root"] == str(WORK)

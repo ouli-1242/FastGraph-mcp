@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import time
+from pathlib import Path
 
 from fastgraph.db import DB
 from fastgraph import graph, gitutil
@@ -12,14 +12,37 @@ from fastgraph.search import code_search
 
 
 class Toolbox:
-    """Stateful tool handler bound to one project root."""
+    """Stateful tool handler bound to one project root.
+
+    An optional per-call ``root`` argument switches to another project:
+    a dedicated (DB, indexer) pair is lazily created and cached per root.
+    This makes the server usable from desktop clients, which launch MCP
+    processes with a fixed cwd and cannot pass the working folder.
+    """
 
     def __init__(self, root, db: DB, indexer: Indexer):
         self.root = root
         self.db = db
         self.indexer = indexer
+        self._roots: dict[Path, "Toolbox"] = {}
 
     # ------------------------------------------------------------- helpers
+
+    def _for_root(self, root: str | None):
+        """Return the toolbox for ``root`` (default: this one)."""
+        if root is None:
+            return self
+        path = Path(root).resolve()
+        if path == self.root.resolve():
+            return self
+        if path in self._roots:
+            return self._roots[path]
+        if not path.is_dir():
+            raise ValueError(f"root {path} is not an existing directory")
+        db = DB(path)
+        sub = Toolbox(path, db, Indexer(path, db))
+        self._roots[path] = sub
+        return sub
 
     def _ensure_fresh(self) -> dict:
         """Lazy incremental refresh: only changed files re-parsed."""
@@ -49,13 +72,15 @@ class Toolbox:
 
     # --------------------------------------------------------------- tools
 
-    def code_search(self, query: str, limit: int = 10, kind: str | None = None) -> dict:
+    def code_search(self, query: str, limit: int = 10, kind: str | None = None, root: str | None = None) -> dict:
         t0 = time.perf_counter()
-        refresh = self._ensure_fresh()
-        hits = code_search(self.db, query, limit=limit, kind=kind)
+        tb = self._for_root(root)
+        refresh = tb._ensure_fresh()
+        hits = code_search(tb.db, query, limit=limit, kind=kind)
         return {
             "results": hits,
             "count": len(hits),
+            "root": str(tb.root),
             "refresh": refresh,
             "ms": round((time.perf_counter() - t0) * 1000, 1),
         }
@@ -161,11 +186,12 @@ class Toolbox:
             "ms": round((time.perf_counter() - t0) * 1000, 1),
         }
 
-    def project_overview(self) -> dict:
+    def project_overview(self, root: str | None = None) -> dict:
         t0 = time.perf_counter()
-        refresh = self._ensure_fresh()
-        overview = graph.project_overview(self.db)
-        overview["root"] = str(self.root)
+        tb = self._for_root(root)
+        refresh = tb._ensure_fresh()
+        overview = graph.project_overview(tb.db)
+        overview["root"] = str(tb.root)
         overview["refresh"] = refresh
         overview["ms"] = round((time.perf_counter() - t0) * 1000, 1)
         return overview
