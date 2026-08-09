@@ -19,73 +19,82 @@ def build_server(root) -> MCPServer:
     server = MCPServer(
         "fastgraph",
         instructions=(
-            "FastGraph: code map, search and impact analysis for coding agents. "
-            "Use code_search to locate symbols, symbol_info for details, "
-            "find_callers/find_callees for the call graph, type_hierarchy for "
-            "inheritance, file_symbols/file_deps to understand a file, "
-            "rename_impact before renaming, impact_analysis before editing, "
-            "changed_context after edits. Never grep the tree yourself."
+            "FastGraph: lightweight project map, search, call graph and impact analysis. "
+            "NEVER grep the repo or read whole files to find things - call these tools instead; "
+            "every result is file:line + symbol, no source bodies.\n"
+            "Pick tool by task:\n"
+            "- new to repo / big picture: project_overview() (entry points, top-level layout, "
+            "cross-module dependency direction, parse errors)\n"
+            "- find where a symbol/feature lives: code_search()\n"
+            "- symbol detail (signature, doc): symbol_info(); whole file layout first: file_symbols()\n"
+            "- who calls / what it calls: find_callers() / find_callees(); chain between two: trace_path()\n"
+            "- inherited family: type_hierarchy()\n"
+            "- BEFORE touching code: impact_analysis(symbol) for blast radius; "
+            "rename_impact(symbol) before renaming (risk grade HIGH/MEDIUM/LOW)\n"
+            "- file-level imports: file_deps(path)\n"
+            "- AFTER edits: changed_context() to re-sync with git diff.\n"
+            "Output size discipline: prefer limit=10-20; results are compact by design."
         ),
     )
 
     @server.tool()
     def code_search(query: str, limit: int = 10, kind: str | None = None) -> dict:
-        """Find code by natural language or keywords. Returns file:line + symbol hits."""
+        """Find where code lives by keywords/natural language. First choice when you don't know the symbol name."""
         return tools.code_search(query, limit=limit, kind=kind)
 
     @server.tool()
     def symbol_info(symbol: str) -> dict:
-        """Locate a symbol by name or qualified name (A.B.foo)."""
+        """Details for a symbol by name or qualified name (A.B.foo): file, lines, signature, doc, callees."""
         return tools.symbol_info(symbol)
 
     @server.tool()
     def find_callers(symbol: str, limit: int = 30, depth: int = 1) -> dict:
-        """Who calls this symbol (BFS, depth for transitive callers)."""
+        """Who calls this symbol. depth=2+ for transitive callers (who calls the callers)."""
         return tools.find_callers(symbol, limit=limit, depth=depth)
 
     @server.tool()
     def find_callees(symbol: str, limit: int = 50, depth: int = 1) -> dict:
-        """What this symbol calls."""
+        """What this symbol calls. depth=2+ for the full downstream call tree."""
         return tools.find_callees(symbol, limit=limit, depth=depth)
 
     @server.tool()
     def trace_path(from_symbol: str, to_symbol: str | None = None, depth: int = 3) -> dict:
-        """Shortest call chain from_symbol -> to_symbol (or up-chain if no target)."""
+        """Call chain between two symbols; without to_symbol returns the up-chain of callers."""
         return tools.trace_path(from_symbol, to_symbol, depth=depth)
 
     @server.tool()
     def impact_analysis(symbol: str, max_depth: int = 2, limit: int = 40) -> dict:
-        """Reverse BFS blast radius: HIGH=direct callers, MEDIUM=indirect, tests listed."""
+        """MUST call before editing: reverse-BFS blast radius. HIGH=direct callers, MEDIUM=indirect, tests separated."""
         return tools.impact_analysis(symbol, max_depth=max_depth, limit=limit)
 
     @server.tool()
     def changed_context(limit: int = 50) -> dict:
-        """Git-aware: changed files -> changed symbols -> affected callers."""
+        """Call after edits: git diff -> changed symbols -> affected callers. Syncs your changes to the index."""
         return tools.changed_context(limit=limit)
 
     @server.tool()
     def project_overview() -> dict:
-        """Project map: languages, file/symbol counts, top-level layout, parse errors."""
+        """Project map: languages, file/symbol counts, entry points, top-level layout, cross-module dependency direction, parse errors."""
         return tools.project_overview()
 
     @server.tool()
     def file_symbols(path: str, limit: int = 200) -> dict:
-        """All symbols declared in one file (line ranges, kinds, signatures)."""
+        """All symbols in one file (line ranges, kinds, signatures). Read this instead of the whole file when possible."""
         return tools.file_symbols(path, limit=limit)
 
     @server.tool()
     def file_deps(path: str) -> dict:
-        """File-level deps: what `path` imports, and which files import it."""
+        """What a file imports and which files import it. Check before changing imports or module structure."""
         return tools.file_deps(path)
 
     @server.tool()
     def rename_impact(symbol: str, limit: int = 100) -> dict:
-        """Change risk: every definition + reference site of `symbol`, graded HIGH/MEDIUM/LOW."""
+        """Call BEFORE renaming: all definitions + reference sites with HIGH/MEDIUM/LOW risk grade (public API, test sites)."""
         return tools.rename_impact(symbol, limit=limit)
 
     @server.tool()
     def type_hierarchy(symbol: str) -> dict:
-        """Class inheritance: ancestors (bases) and descendants (subclasses)."""
+        """Class inheritance: ancestors (bases) and descendants (subclasses). Check before editing a base class."""
         return tools.type_hierarchy(symbol)
 
     return server
