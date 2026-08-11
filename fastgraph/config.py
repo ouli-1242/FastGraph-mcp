@@ -49,8 +49,28 @@ def user_home() -> Path:
     return Path(getenv("USERPROFILE") or Path.home()).resolve()
 
 
-# Project-local ignore file, read from the indexed root (gitignore-style).
+# Local-only ignore file inside the index dir; auto-created with a template on
+# first index. (The project-root variant was dropped: local-only keeps the
+# project tree clean and the rules per-developer.)
 IGNORE_FILENAME = ".fastgraphignore"
+
+IGNORE_TEMPLATE = """# FastGraph 忽略规则（gitignore 风格，仅本机生效）
+# 一行一个模式：匹配目录/文件名（任意深度）或相对路径通配
+# 例如：
+#   vendor              # 忽略任何叫 vendor 的目录/文件
+#   generated/*.min.js  # 路径通配
+#   build/              # 忽略目录
+"""
+
+
+def ensure_ignore_template(index_dir: Path) -> None:
+    """Write the commented template once; never overwrite user rules."""
+    f = index_dir / IGNORE_FILENAME
+    if not f.is_file():
+        try:
+            f.write_text(IGNORE_TEMPLATE, encoding="utf-8")
+        except OSError:
+            pass
 
 
 def parse_ignore(text: str) -> list[str]:

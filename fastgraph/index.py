@@ -160,21 +160,16 @@ class Indexer:
             self._walk_skipped = True
             return stats
 
-        # project-local .fastgraphignore: entries matching its patterns are
-        # skipped by the walk (and, being absent from `seen`, removed on the
-        # next refresh if they were indexed before the ignore was added).
-        # Two locations, unioned: the project root copy is shareable via git,
-        # the .fastgraph/ copy is local-only and already git-ignored.
-        patterns: list[str] = []
-        for p in (
-            self.root / IGNORE_FILENAME,
-            self.root / ".fastgraph" / IGNORE_FILENAME,
-        ):
-            if p.is_file():
-                patterns.extend(
-                    parse_ignore(p.read_text(encoding="utf-8", errors="replace"))
-                )
-        self._ignore_patterns = patterns
+        # local-only ignore config: .fastgraph/.fastgraphignore (template
+        # auto-created on first index). Matched entries are skipped by the
+        # walk (and, being absent from `seen`, removed on the next refresh if
+        # they were indexed before the rule was added).
+        ignore_file = self.root / ".fastgraph" / IGNORE_FILENAME
+        self._ignore_patterns = (
+            parse_ignore(ignore_file.read_text(encoding="utf-8", errors="replace"))
+            if ignore_file.is_file()
+            else []
+        )
 
         cached = self.db.file_map()
 

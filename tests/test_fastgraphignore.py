@@ -1,11 +1,12 @@
-""".fastgraphignore skips matching entries; works from the project root and
-from .fastgraph/ (local-only), with incremental removal on refresh."""
+""".fastgraph/.fastgraphignore skips matching entries (local-only, template
+auto-created on first index), with incremental removal on refresh."""
 import shutil
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from fastgraph.config import IGNORE_TEMPLATE
 from fastgraph.db import DB
 from fastgraph.index import Indexer
 
@@ -29,36 +30,36 @@ def _paths(db: DB) -> list[str]:
     return [r[0] for r in db.conn.execute("SELECT path FROM files ORDER BY path")]
 
 
-def test_ignore_vendor_dir_from_root():
+def test_ignore_template_auto_created():
+    _rmtree(WORK)
+    WORK.mkdir(parents=True, exist_ok=True)
+    db = DB(WORK)
+    ignore = WORK / ".fastgraph" / ".fastgraphignore"
+    assert ignore.is_file()
+    assert ignore.read_text(encoding="utf-8") == IGNORE_TEMPLATE
+    # never overwritten once the user edits it
+    ignore.write_text("vendor\n", encoding="utf-8")
+    db2 = DB(WORK)
+    assert ignore.read_text(encoding="utf-8") == "vendor\n"
+    db.close()
+    db2.close()
+    _rmtree(WORK)
+
+
+def test_ignore_vendor_dir():
     _make_project({
-        ".fastgraphignore": "vendor\n",
         "src/a.py": "x = 1\n",
         "vendor/lib.py": "y = 2\n",
         "src/vendor/helper.py": "z = 3\n",
     })
+    (WORK / ".fastgraph").mkdir(parents=True, exist_ok=True)
+    (WORK / ".fastgraph/.fastgraphignore").write_text("vendor\n", encoding="utf-8")
     db = DB(WORK)
     Indexer(WORK, db).force_index()
     paths = _paths(db)
     assert "src/a.py" in paths
     assert "vendor/lib.py" not in paths
     assert "src/vendor/helper.py" not in paths  # name match at any depth
-    db.close()
-    _rmtree(WORK)
-
-
-def test_ignore_local_config_in_fastgraph_dir():
-    _rmtree(WORK)
-    (WORK / "src").mkdir(parents=True, exist_ok=True)
-    (WORK / "gen").mkdir(parents=True, exist_ok=True)
-    (WORK / "src/a.py").write_text("x = 1\n", encoding="utf-8")
-    (WORK / "gen/out.js").write_text("y = 2\n", encoding="utf-8")
-    (WORK / ".fastgraph").mkdir(parents=True, exist_ok=True)
-    (WORK / ".fastgraph/.fastgraphignore").write_text("gen\n", encoding="utf-8")
-    db = DB(WORK)
-    Indexer(WORK, db).force_index()
-    paths = _paths(db)
-    assert "src/a.py" in paths
-    assert "gen/out.js" not in paths
     db.close()
     _rmtree(WORK)
 
@@ -71,7 +72,8 @@ def test_incremental_removal_when_ignored_later():
     db = DB(WORK)
     Indexer(WORK, db).force_index()
     assert "legacy/b.py" in _paths(db)
-    (WORK / ".fastgraphignore").write_text("legacy\n", encoding="utf-8")
+    ignore = WORK / ".fastgraph" / ".fastgraphignore"
+    ignore.write_text("legacy\n", encoding="utf-8")
     stats = Indexer(WORK, db).refresh()
     assert stats.deleted >= 1
     assert "legacy/b.py" not in _paths(db)
@@ -82,11 +84,14 @@ def test_incremental_removal_when_ignored_later():
 
 def test_path_glob_pattern():
     _make_project({
-        ".fastgraphignore": "generated/*.min.js\n",
         "generated/bundle.min.js": "x\n",
         "generated/source.js": "y\n",
         "src/main.js": "z\n",
     })
+    (WORK / ".fastgraph").mkdir(parents=True, exist_ok=True)
+    (WORK / ".fastgraph/.fastgraphignore").write_text(
+        "generated/*.min.js\n", encoding="utf-8"
+    )
     db = DB(WORK)
     Indexer(WORK, db).force_index()
     paths = _paths(db)

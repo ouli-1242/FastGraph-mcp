@@ -6,6 +6,8 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from fastgraph.config import ensure_ignore_template
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS files (
     id         INTEGER PRIMARY KEY,
@@ -91,6 +93,7 @@ class DB:
         self.root = root.resolve()
         self.index_dir = self.root / ".fastgraph"
         self.index_dir.mkdir(parents=True, exist_ok=True)
+        ensure_ignore_template(self.index_dir)
         self.db_path = self.index_dir / "index.sqlite"
         self._local = threading.local()
         self._all_conns: list[sqlite3.Connection] = []
