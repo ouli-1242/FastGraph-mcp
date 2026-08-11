@@ -11,7 +11,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastgraph.config import DEFAULT_EXCLUDES, MAX_FILE_SIZE, user_home
+from fastgraph.config import (
+    DEFAULT_EXCLUDES,
+    IGNORE_FILENAME,
+    MAX_FILE_SIZE,
+    matches_ignore,
+    parse_ignore,
+    user_home,
+)
 from fastgraph.db import DB
 from fastgraph import graph
 from fastgraph.parsers.base import SymbolInfo
@@ -130,6 +137,7 @@ class Indexer:
         self.db = db
         self.excludes = excludes or DEFAULT_EXCLUDES
         self._walk_skipped = False
+        self._ignore_patterns: list[str] = []
         # Serialize refresh() across threads: every tool call runs _ensure_fresh,
         # and concurrent writes to the same sqlite connection crash with
         # InterfaceError / UNIQUE constraint races (see STRESS_TEST_REPORT P1-1).
@@ -151,6 +159,22 @@ class Indexer:
             stats.skipped = True
             self._walk_skipped = True
             return stats
+
+        # project-local .fastgraphignore: entries matching its patterns are
+        # skipped by the walk (and, being absent from `seen`, removed on the
+        # next refresh if they were indexed before the ignore was added).
+        # Two locations, unioned: the project root copy is shareable via git,
+        # the .fastgraph/ copy is local-only and already git-ignored.
+        patterns: list[str] = []
+        for p in (
+            self.root / IGNORE_FILENAME,
+            self.root / ".fastgraph" / IGNORE_FILENAME,
+        ):
+            if p.is_file():
+                patterns.extend(
+                    parse_ignore(p.read_text(encoding="utf-8", errors="replace"))
+                )
+        self._ignore_patterns = patterns
 
         cached = self.db.file_map()
 
@@ -244,6 +268,11 @@ class Indexer:
                         return out
                     name = e.name
                     if name in self.excludes or name.startswith("."):
+                        continue
+                    rel = os.path.relpath(e.path, self.root).replace("\\", "/")
+                    if self._ignore_patterns and matches_ignore(
+                        self._ignore_patterns, rel, name
+                    ):
                         continue
                     try:
                         is_dir = e.is_dir(follow_symlinks=False)

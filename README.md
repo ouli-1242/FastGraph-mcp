@@ -191,6 +191,7 @@ FastGraph 不做 LSP / rename / edit / refactor（那是 Serena 的职责）；S
 - **懒 + 增量（无后台任务）**：每次工具调用前检查一次，mtime+size 比对，只重解析变化的文件；文件删除自动移出索引。没有定时器——不调工具索引就不动，任何保存（即使不提交 git）下次查询即反映
 - **首次**：调用任意工具时自动全量扫描（>2MB 文件跳过，Node 黑名单目录排除）
 - **位置**：项目 `.fastgraph/index.sqlite`（自动忽略，不污染 git）
+- **忽略规则**：`.fastgraphignore`（gitignore 风格，支持 `towxml` 目录名、`generated/*.min.js` 路径通配等）——放在项目根可随 git 分享给团队，或放 `.fastgraph/.fastgraphignore` 作为仅本地生效的私有配置（两处取并集）；新增规则后下次调用自动把已索引的文件移出
 
 ## 支持语言
 
