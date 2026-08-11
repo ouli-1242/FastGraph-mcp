@@ -147,7 +147,7 @@ def find_callers(db: DB, name: str, limit: int = 30, depth: int = 1) -> list[dic
     while frontier and level < depth:
         nxt: list[int] = []
         for sid in frontier:
-            for c in callers(db, sid):
+            for c in _callers_with_class(db, sid):
                 if c not in seen:
                     seen.add(c)
                     nxt.append(c)
@@ -188,16 +188,42 @@ def _callers_with_class(db: DB, sid: int) -> list[int]:
     where the class-level init/instantiation is not recorded as a direct edge:
     anything calling ``Orchestrator.handle_chat`` is also an upstream of
     ``Orchestrator`` and of ``Orchestrator.__init__``.
+
+    Two text-folding rules, both in addition to exact resolved-id edges:
+    - container symbols (class/interface/struct/impl/enum) fold by qualified
+      *and* bare name, so members of the same class share one upstream set
+      (``Cls.method`` edges fold back to ``Cls``; constructors via
+      ``new Cls()`` / ``Cls()`` edges count for the class);
+    - member symbols fold *exactly*: only their own unresolved text edge
+      (``Cls.method``) and the container's constructor edge (``Cls``) count.
+      Never a ``Cls.%`` prefix match: that would report every caller of
+      sibling members (other methods, auto-generated getters/setters) as a
+      caller of this member.
+
+    Bare module-level functions never text-fold: mere references such as
+    FastAPI ``Depends(fn)`` must not masquerade as callers.
     """
     out = list(callers(db, sid))
     info = symbol_by_id(db, sid)
-    if info:
-        qname = info.get("qualified_name") or ""
-        cls = qname.rsplit(".", 1)[0] if "." in qname else None
-        if cls:
+    if not info:
+        return out
+    qname = info.get("qualified_name") or ""
+    kind = info.get("kind") or ""
+    if kind in ("class", "interface", "struct", "impl", "enum"):
+        candidates = {qname, info.get("name") or ""}
+        # longest first: dotted qualified names outmatch bare names
+        for cand in sorted((c for c in candidates if c), key=len, reverse=True):
             for r in db.conn.execute(
                 "SELECT DISTINCT source_id FROM relations WHERE target = ? OR target LIKE ?",
-                (cls, cls + ".%"),
+                (cand, cand + ".%"),
+            ):
+                if r[0] not in out:
+                    out.append(r[0])
+    elif "." in qname:
+        for cand in (qname, qname.rsplit(".", 1)[0]):
+            for r in db.conn.execute(
+                "SELECT DISTINCT source_id FROM relations WHERE target = ?",
+                (cand,),
             ):
                 if r[0] not in out:
                     out.append(r[0])
@@ -265,7 +291,7 @@ def impact_analysis(db: DB, name: str, max_depth: int = 3, limit: int = 50) -> d
     for depth in range(max_depth):
         nxt: list[int] = []
         for sid in frontier:
-            for c in callers(db, sid):
+            for c in _callers_with_class(db, sid):
                 if c in seen or c in root_ids:
                     continue
                 seen.add(c)
@@ -517,6 +543,181 @@ def project_overview(db: DB) -> dict:
     }
 
 
+def unused_symbols(db: DB, limit: int = 50) -> list[dict]:
+    """Potentially dead code: methods/functions with no incoming call edge.
+
+    Incoming means either a resolved id edge (target_id) or a raw-text edge
+    (`instance.method` / `new X()` / `X()` shapes). Constructors, interface
+    members, test/spec paths and entry-point files are excluded by design.
+    Output is a *candidate* list: confirm with find_callers before deleting.
+    """
+    by_id: set[int] = set()
+    texts: set[str] = set()
+    for r in db.conn.execute("SELECT target_id, target FROM relations WHERE rtype = 'calls'"):
+        if r[0] is not None:
+            by_id.add(r[0])
+        if r[1]:
+            texts.add(r[1])
+    # O(1) per-symbol text check: exact name OR dotted-target first segment
+    # (SQLite LIKE is ASCII case-insensitive; `.lower()` mirrors that)
+    exact = {t.lower() for t in texts}
+    first_seg = {t.split(".", 1)[0].lower() for t in texts if "." in t}
+    ifaces = db.conn.execute(
+        "SELECT file_id, start_line, end_line FROM symbols WHERE kind = 'interface'"
+    ).fetchall()
+    # Vue/Svelte: methods referenced only from the template (event/prop
+    # bindings) never produce call edges; exclude them per (file, name).
+    tpl_refs = {
+        (fid, name)
+        for fid, name in db.conn.execute("SELECT file_id, name FROM template_refs")
+    }
+
+    def text_referenced(name: str, qname: str) -> bool:
+        for cand in {name, qname}:
+            cl = cand.lower()
+            if cl in exact or cl in first_seg:
+                return True
+        return False
+
+    out: list[dict] = []
+    for r in db.conn.execute(
+        """SELECT s.id, s.name, s.kind, s.qualified_name, s.signature, s.start_line, f.path, f.id
+           FROM symbols s JOIN files f ON f.id = s.file_id
+           WHERE s.kind IN ('method', 'function')
+           ORDER BY f.path, s.start_line"""
+    ):
+        sid, name, kind, qname, sig, line, path, fid = r
+        if sid in by_id:
+            continue
+        if (fid, name) in tpl_refs:
+            continue
+        lp = path.lower()
+        if "test" in lp or "spec" in lp or Path(path).name in _ENTRY_NAMES:
+            continue
+        # interface members are dispatched polymorphically, not called by name
+        if any(fid == ifid and istart <= line <= iend for ifid, istart, iend in ifaces):
+            continue
+        if text_referenced(name, qname):
+            continue
+        out.append({
+            "symbol": name,
+            "qualified_name": qname,
+            "kind": kind,
+            "file": path,
+            "lines": str(line),
+            "signature": (sig or "")[:120],
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def hot_symbols(db: DB, limit: int = 20) -> list[dict]:
+    """Most-referenced symbols by resolved incoming call edge count,
+    with a test/main split for each hotspot."""
+    rows = db.conn.execute(
+        """SELECT s.id, s.name, s.kind, s.qualified_name, s.start_line, f.path,
+                  COUNT(*) AS n,
+                  SUM(CASE WHEN sf.path LIKE '%test%' OR sf.path LIKE '%spec%'
+                           OR sf.path LIKE '%tests%' THEN 1 ELSE 0 END) AS test_n
+           FROM relations r
+           JOIN symbols s ON s.id = r.target_id
+           JOIN files f ON f.id = s.file_id
+           LEFT JOIN symbols ss ON ss.id = r.source_id
+           LEFT JOIN files sf ON sf.id = ss.file_id
+           WHERE r.rtype = 'calls' AND r.target_id IS NOT NULL
+           GROUP BY s.id
+           ORDER BY n DESC, s.start_line
+           LIMIT ?""",
+        (limit,),
+    )
+    return [
+        {
+            "symbol": r[1],
+            "qualified_name": r[3],
+            "kind": r[2],
+            "file": r[5],
+            "lines": str(r[4]),
+            "call_count": r[6],
+            "test_calls": r[7] or 0,
+        }
+        for r in rows
+    ]
+
+
+def file_metrics(db: DB, limit: int = 20) -> list[dict]:
+    """Per-file aggregation: symbol count, outgoing call edges, incoming
+    call edges — a quick "which files are big/complex" table."""
+    rows = db.conn.execute(
+        """SELECT f.path,
+                  (SELECT COUNT(*) FROM symbols ss WHERE ss.file_id = f.id) AS symbols,
+                  (SELECT COUNT(*) FROM relations rr JOIN symbols ss ON ss.id = rr.source_id
+                   WHERE ss.file_id = f.id AND rr.rtype = 'calls') AS outgoing,
+                  (SELECT COUNT(*) FROM relations rr JOIN symbols ss ON ss.id = rr.target_id
+                   WHERE ss.file_id = f.id AND rr.rtype = 'calls') AS incoming
+           FROM files f
+           ORDER BY symbols DESC, outgoing DESC
+           LIMIT ?""",
+        (limit,),
+    )
+    return [
+        {"file": r[0], "symbols": r[1], "outgoing_calls": r[2], "incoming_calls": r[3]}
+        for r in rows
+    ]
+
+
+def module_cycles(db: DB, max_cycles: int = 10) -> list[dict]:
+    """Directed import cycles between files (Strongly Connected Components
+    of the resolved-import graph). Self-imports count as 1-node cycles."""
+    adj: dict[str, set[str]] = {}
+    for (fid, path) in db.conn.execute("SELECT id, path FROM files"):
+        targets: set[str] = set()
+        for (text,) in db.conn.execute(
+            "SELECT text FROM file_imports WHERE file_id = ?", (fid,)
+        ):
+            targets.update(import_targets(db, text, path))
+        adj[path] = targets
+
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    onstack: set[str] = set()
+    stack: list[str] = []
+    counter = [0]
+    sccs: list[list[str]] = []
+
+    def strongconnect(v: str) -> None:
+        index[v] = low[v] = counter[0]
+        counter[0] += 1
+        stack.append(v)
+        onstack.add(v)
+        for w in adj.get(v, ()):
+            if w not in index:
+                strongconnect(w)
+                low[v] = min(low[v], low[w])
+            elif w in onstack:
+                low[v] = min(low[v], index[w])
+        if low[v] == index[v]:
+            comp: list[str] = []
+            while True:
+                w = stack.pop()
+                onstack.discard(w)
+                comp.append(w)
+                if w == v:
+                    break
+            sccs.append(comp)
+
+    for node in adj:
+        if node not in index:
+            strongconnect(node)
+
+    cycles = [
+        {"files": comp, "size": len(comp)}
+        for comp in sccs
+        if len(comp) > 1 or (len(comp) == 1 and comp[0] in adj.get(comp[0], ()))
+    ]
+    return sorted(cycles, key=lambda c: -c["size"])[:max_cycles]
+
+
 _ENTRY_NAMES = {
     "main.py", "__main__.py", "app.py", "cli.py", "manage.py", "serve.py",
     "app.ts", "index.ts", "index.js", "index.tsx", "index.jsx", "main.ts", "main.go", "main.rs",
@@ -618,6 +819,19 @@ def rename_impact(db: DB, name: str, limit: int = 100) -> dict:
         refs.append({"symbol": name, "file": r[2], "line": r[1], "rtype": "import", "via_text": r[0][:60]})
         if len(refs) >= limit:
             break
+
+    # The Java/TS parsers emit both a bare and a dotted call edge for
+    # `Cls.method()`; both may resolve to the same target, so one reference
+    # site can appear twice (once per via_text). Dedupe by site.
+    seen_refs: set[tuple] = set()
+    deduped: list[dict] = []
+    for r in refs:
+        k = (r.get("file"), r.get("line"), r.get("symbol"))
+        if k in seen_refs:
+            continue
+        seen_refs.add(k)
+        deduped.append(r)
+    refs = deduped
 
     risk = _risk_grade(defs, refs)
     return {
