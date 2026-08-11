@@ -457,50 +457,68 @@ def file_symbols(db: DB, path: str, limit: int = 200) -> list[dict]:
     ]
 
 
-_alias_cache: dict[Path, dict[str, str]] = {}
+_alias_cache: dict[tuple[Path, str], dict[str, str]] = {}
 
 
-def _alias_prefixes(db: DB) -> dict[str, str]:
-    """Import alias prefix → root-relative directory.
+def _alias_prefixes(db: DB, import_file: str | None = None) -> dict[str, str]:
+    """Import alias prefix → directory (relative to the config's own dir).
 
-    Sources (first match per alias wins): tsconfig/jsconfig compilerOptions
-    paths, vite resolve.alias, and the uni-app convention `@` → project root
-    (only when pages.json exists). Cached per project root; never guesses when
-    no config exists, so projects without aliases are unaffected.
+    Config is looked up from the importing file's directory upward to the
+    project root, so sub-projects (e.g. a uni-app miniapp folder) resolve
+    their own aliases (`@` → miniapp root when pages.json lives there).
+    Sources (deeper dirs override): tsconfig/jsconfig compilerOptions paths,
+    vite resolve.alias, and the uni-app convention. Cached per (root, import
+    file); never guesses when no config exists.
     """
     root = db.root
-    if root in _alias_cache:
-        return _alias_cache[root]
+    key = (root, import_file or "")
+    if key in _alias_cache:
+        return _alias_cache[key]
     m: dict[str, str] = {}
-    for cfg_name in ("jsconfig.json", "tsconfig.json"):
-        cfg = root / cfg_name
-        if not cfg.is_file():
-            continue
-        try:
-            data = json.loads(cfg.read_text(encoding="utf-8", errors="replace"))
-        except Exception:
-            continue
-        paths = (data.get("compilerOptions") or {}).get("paths") or {}
-        for key, targets in paths.items():
-            if not targets or not isinstance(targets, list):
+    dirs: list[Path] = []
+    if import_file:
+        cur = (root / import_file).parent
+        while True:
+            dirs.append(cur)
+            if cur == root:
+                break
+            parent = cur.parent
+            if parent == cur:
+                break
+            cur = parent
+        dirs.reverse()  # root first, deepest dir overrides on conflict
+    else:
+        dirs = [root]
+    for d in dirs:
+        for cfg_name in ("jsconfig.json", "tsconfig.json"):
+            cfg = d / cfg_name
+            if not cfg.is_file():
                 continue
-            alias = key.split("/*")[0].rstrip("*")
-            tgt = str(targets[0]).split("/*")[0].rstrip("*")
-            if alias and tgt:
-                m[alias] = tgt.strip("./")
-    for vname in ("vite.config.js", "vite.config.ts", "vite.config.mjs"):
-        vcfg = root / vname
-        if not vcfg.is_file():
-            continue
-        txt = vcfg.read_text(encoding="utf-8", errors="replace")
-        for mm in re.finditer(r"alias\s*:\s*\{([\s\S]*?)\}", txt):
-            for am in re.finditer(
-                r"['\"]([@\w/-]+)['\"]\s*:\s*['\"]?([^'\"\s,}]+)", mm.group(1)
-            ):
-                m[am.group(1)] = am.group(2).strip("'\"")
-    if not any(k == "@" for k in m) and (root / "pages.json").is_file():
-        m["@"] = ""  # uni-app: @ → project root
-    _alias_cache[root] = m
+            try:
+                data = json.loads(cfg.read_text(encoding="utf-8", errors="replace"))
+            except Exception:
+                continue
+            paths = (data.get("compilerOptions") or {}).get("paths") or {}
+            for key_, targets in paths.items():
+                if not targets or not isinstance(targets, list):
+                    continue
+                alias = key_.split("/*")[0].rstrip("*")
+                tgt = str(targets[0]).split("/*")[0].rstrip("*")
+                if alias and tgt:
+                    m[alias] = tgt.strip("./")
+        for vname in ("vite.config.js", "vite.config.ts", "vite.config.mjs"):
+            vcfg = d / vname
+            if not vcfg.is_file():
+                continue
+            txt = vcfg.read_text(encoding="utf-8", errors="replace")
+            for mm in re.finditer(r"alias\s*:\s*\{([\s\S]*?)\}", txt):
+                for am in re.finditer(
+                    r"['\"]([@\w/-]+)['\"]\s*:\s*['\"]?([^'\"\s,}]+)", mm.group(1)
+                ):
+                    m[am.group(1)] = am.group(2).strip("'\"")
+        if not any(k == "@" for k in m) and (d / "pages.json").is_file():
+            m["@"] = ""  # uni-app: @ → this directory (sub-project root)
+    _alias_cache[key] = m
     return m
 
 
@@ -512,7 +530,7 @@ def import_targets(db: DB, import_text: str, import_file: str) -> list[str]:
     mod = m.group(2)
     # configured import aliases (`@/x`, tsconfig paths, vite alias): substitute
     # the prefix before the stem matching below
-    for alias, tgt in sorted(_alias_prefixes(db).items(), key=lambda kv: -len(kv[0])):
+    for alias, tgt in sorted(_alias_prefixes(db, import_file).items(), key=lambda kv: -len(kv[0])):
         if mod == alias or mod.startswith(alias + "/"):
             rest = mod[len(alias):].lstrip("/")
             mod = f"{tgt}/{rest}" if tgt else rest

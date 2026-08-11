@@ -38,3 +38,29 @@ def test_alias_import_resolves():
     )
     db.close()
     _rmtree(WORK)
+
+
+def test_uni_app_alias_in_subproject():
+    """uni-app `@` convention resolved from the sub-project dir (pages.json)."""
+    _rmtree(WORK)
+    (WORK / "mini/utils").mkdir(parents=True, exist_ok=True)
+    (WORK / "mini/pages.json").write_text("{}", encoding="utf-8")
+    (WORK / "mini/utils/plan.js").write_text(
+        "import { formatTime } from '@/utils/format.js';\n"
+        "export function p() { return formatTime(); }\n",
+        encoding="utf-8",
+    )
+    (WORK / "mini/utils/format.js").write_text(
+        "export function formatTime() { return 1; }\n", encoding="utf-8"
+    )
+    db = DB(WORK)
+    Indexer(WORK, db).force_index()
+    tb = Toolbox(WORK, db, Indexer(WORK, db))
+    deps = tb.file_deps("mini/utils/plan.js")
+    assert any(
+        "mini/utils/format.js" in t
+        for imp in deps.get("imports", [])
+        for t in imp["resolves_to"]
+    )
+    db.close()
+    _rmtree(WORK)

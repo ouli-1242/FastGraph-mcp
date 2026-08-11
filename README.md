@@ -14,7 +14,7 @@ FastGraph-MCP 是一个轻量级代码智能 MCP 服务器，补充 Serena 等�
 
 - [快速开始（5 分钟）](#快速开始5-分钟)
 - [MCP 配置](#mcp-配置)
-- [工具速查（13 个）](#工具速查13-个)
+- [工具速查（17 个）](#工具速查17-个)
 - [与 Serena 分工](#与-serena-分工)
 - [支持语言](#支持语言)
 - [开发](#开发)
@@ -136,7 +136,7 @@ OpenCode（`opencode.json`）：
 
 打开后**每次工具响应都带 `refresh` 统计**（`scanned` / `parsed` / `deleted` / `errors` / `refresh_ms`），其中 `refresh_ms` 是每次调用前的索引增量检查耗时（查询的主要开销来源）。平时不用开，定位慢查询时再开。
 
-## 工具速查（13 个）
+## 工具速查（17 个）
 
 按任务选工具：
 
@@ -153,6 +153,10 @@ OpenCode（`opencode.json`）：
 | 改代码前：影响面 | `impact_analysis(symbol, max_depth?)` | 直接调用者(HIGH)/间接(MEDIUM)/测试单列 |
 | 改名之前：风险评估 | `rename_impact(symbol)` | 全部定义 + 引用点，HIGH/MEDIUM/LOW 分级 |
 | 改 import 前 | `file_deps(path)` | import 了什么（内部 `imports` / 外部 `external_imports` 分开）、被谁 import |
+| 找死代码 | `unused_symbols(limit?)` | 无入边的方法/函数（排除测试、入口、接口成员、Vue 模板绑定；候选需 `find_callers` 复核） |
+| 找核心代码 | `hot_symbols(limit?)` | 入边最多的符号 + 测试调用数拆分，回答"这个仓库的核心是什么" |
+| 找复杂文件 | `file_metrics(limit?)` | 每文件符号数/出入调用边，快速定位大而复杂的文件 |
+| 架构健康 | `module_cycles(max_cycles?)` | 文件间 import 环（强连通分量），最大的排前面 |
 | 刚改完代码 | `changed_context()` | git diff → 变更文件/符号 → 受影响的调用者 |
 
 输出统一为 `symbol / file / line / relation`，绝不含文件正文。稳态调用不返回 `refresh`/`ms` 遥测（省 context）；只有索引真正重解析/报错时才带 `refresh` 统计。
@@ -179,7 +183,7 @@ FastGraph 不做 LSP / rename / edit / refactor（那是 Serena 的职责）；S
 
 - 无 embedding、无 vector store（对比 CocoIndex/Vera：不跑模型）
 - 无图数据库、无 docker 服务（对比 CodeGraphContext 的 docker-compose）
-- 仅 13 个工具、输出极小（对比 CodeGraph 45 个工具 + 大输出）
+- 仅 17 个工具、输出极小（对比 CodeGraph 45 个工具 + 大输出）
 - 增量秒级，无全量重索引（对比常见 RAG 的更新成本）
 
 ## 索引机制
@@ -208,6 +212,7 @@ python -m pytest tests/
 - [x] Phase 1：MCP Server + tree-sitter + SQLite + `code_search`/`project_overview`
 - [x] Phase 2：call graph（calls/imports/inherits）+ `find_callers/find_callees/trace_path`
 - [x] Phase 3：`impact_analysis` + `changed_context`（git diff 集成）
+- [x] Phase 3.5：分析工具（`unused_symbols` / `hot_symbols` / `file_metrics` / `module_cycles`）+ Vue 模板引用、别名导入、内容搜索、`@` 别名 file_deps、类级 call graph
 - [ ] Phase 4：可选 BM25/embedding 语义搜索（--no-embed 模式默认关闭）
 - [ ] Phase 5：多项目 workspace 支持
 
