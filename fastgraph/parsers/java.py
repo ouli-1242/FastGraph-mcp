@@ -66,19 +66,30 @@ class JavaAdapter:
                 name = node_text(node.child_by_field_name("name"), source, 120)
                 parent = stack[-1].qualified_name if stack else None
                 bases: list[CallRef] = []
+                supers: list[str] = []
+                ifaces: list[str] = []
                 for c in node.named_children:
                     if c.type == "superclass":
                         for i in c.named_children:
-                            if i.type in ("identifier", "scoped_identifier"):
-                                bases.append(CallRef(target=node_text(i, source, 160), line=i.start_point[0] + 1, rtype="inherits"))
+                            if i.type in ("type_identifier", "scoped_type_identifier", "identifier", "scoped_identifier"):
+                                t = node_text(i, source, 160)
+                                supers.append(t)
+                                bases.append(CallRef(target=t, line=i.start_point[0] + 1, rtype="inherits"))
                     elif c.type == "super_interfaces":
                         for i in c.named_children:
-                            if i.type in ("identifier", "scoped_identifier"):
-                                bases.append(CallRef(target=node_text(i, source, 160), line=i.start_point[0] + 1, rtype="inherits"))
+                            if i.type in ("type_identifier", "scoped_type_identifier", "identifier", "scoped_identifier"):
+                                t = node_text(i, source, 160)
+                                ifaces.append(t)
+                                bases.append(CallRef(target=t, line=i.start_point[0] + 1, rtype="inherits"))
+                sig = f"class {name}"
+                if supers:
+                    sig += " extends " + ", ".join(supers)
+                if ifaces:
+                    sig += " implements " + ", ".join(ifaces)
                 sym = SymbolInfo(
                     name=name, kind="class",
                     qualified_name=parent + "." + name if parent else name,
-                    signature=f"class {name}", doc="",
+                    signature=sig, doc="",
                     start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
                     start_col=node.start_point[1], end_col=node.end_point[1],
                     parent=parent, bases=bases,
@@ -101,11 +112,24 @@ class JavaAdapter:
                 symbols.append(sym)
             elif t == "interface_declaration":
                 name = node_text(node.child_by_field_name("name"), source, 120)
+                bases: list[CallRef] = []
+                supers: list[str] = []
+                for c in node.named_children:
+                    if c.type == "super_interfaces":
+                        for i in c.named_children:
+                            if i.type in ("type_identifier", "scoped_type_identifier", "identifier", "scoped_identifier"):
+                                t = node_text(i, source, 160)
+                                supers.append(t)
+                                bases.append(CallRef(target=t, line=i.start_point[0] + 1, rtype="inherits"))
+                sig = f"interface {name}"
+                if supers:
+                    sig += " extends " + ", ".join(supers)
                 sym = SymbolInfo(
                     name=name, kind="interface", qualified_name=name,
-                    signature=f"interface {name}", doc="",
+                    signature=sig, doc="",
                     start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
                     start_col=node.start_point[1], end_col=node.end_point[1],
+                    bases=bases,
                 )
                 symbols.append(sym)
                 for c in node.named_children:

@@ -1,4 +1,4 @@
-"""FastGraph-MCP server: 13-tool surface over SQLite graph."""
+"""FastGraph-MCP server: 17-tool surface over SQLite graph."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ def build_server(root) -> MCPServer:
             "- inheritance: type_hierarchy(sym)\n"
             "- before editing: impact_analysis(sym); before renaming: rename_impact(sym)\n"
             "- module imports: file_deps(path)\n"
+            "- dead code / hotspots / file size / import cycles: unused_symbols(), hot_symbols(), file_metrics(), module_cycles()\n"
             "- after edits: changed_context()\n"
             "Keep limit small (10-20); every result is compact by design."
         ),
@@ -101,6 +102,26 @@ def build_server(root) -> MCPServer:
     def type_hierarchy(symbol: str, root: str | None = None) -> dict:
         """Class inheritance: ancestors and descendants. Check before editing a base class."""
         return tools.type_hierarchy(symbol, root=root)
+
+    @server.tool()
+    def unused_symbols(limit: int = 50, root: str | None = None) -> dict:
+        """Potentially dead code: methods/functions with no incoming call edge (tests, entry points, interface members excluded). Candidate list: confirm with find_callers before deleting."""
+        return tools.unused_symbols(limit=limit, root=root)
+
+    @server.tool()
+    def hot_symbols(limit: int = 20, root: str | None = None) -> dict:
+        """Most-referenced symbols by incoming call count, with a test/main split. Quick answer to 'what is the core of this repo'."""
+        return tools.hot_symbols(limit=limit, root=root)
+
+    @server.tool()
+    def file_metrics(limit: int = 20, root: str | None = None) -> dict:
+        """Per-file aggregation (symbol count, outgoing/incoming call edges) to spot large or complex files."""
+        return tools.file_metrics(limit=limit, root=root)
+
+    @server.tool()
+    def module_cycles(max_cycles: int = 10, root: str | None = None) -> dict:
+        """Import cycles between files (strongly connected components), largest first. Architecture health check."""
+        return tools.module_cycles(max_cycles=max_cycles, root=root)
 
     return server
 

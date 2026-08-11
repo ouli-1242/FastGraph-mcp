@@ -246,6 +246,30 @@ class Toolbox:
         overview = graph.project_overview(tb.db)
         return self._finish(overview, tb, refresh)
 
+    def unused_symbols(self, limit: int = 50, root: str | None = None) -> dict:
+        tb = self._for_root(root)
+        refresh = tb._ensure_fresh()
+        hits = graph.unused_symbols(tb.db, limit=limit)
+        return self._finish({"unused": hits, "count": len(hits), "hint": "candidate list; confirm with find_callers before deleting"}, tb, refresh)
+
+    def hot_symbols(self, limit: int = 20, root: str | None = None) -> dict:
+        tb = self._for_root(root)
+        refresh = tb._ensure_fresh()
+        hits = graph.hot_symbols(tb.db, limit=limit)
+        return self._finish({"hot": hits, "count": len(hits)}, tb, refresh)
+
+    def file_metrics(self, limit: int = 20, root: str | None = None) -> dict:
+        tb = self._for_root(root)
+        refresh = tb._ensure_fresh()
+        hits = graph.file_metrics(tb.db, limit=limit)
+        return self._finish({"files": hits, "count": len(hits)}, tb, refresh)
+
+    def module_cycles(self, max_cycles: int = 10, root: str | None = None) -> dict:
+        tb = self._for_root(root)
+        refresh = tb._ensure_fresh()
+        hits = graph.module_cycles(tb.db, max_cycles=max_cycles)
+        return self._finish({"cycles": hits, "count": len(hits)}, tb, refresh)
+
     # ---------------- 文件级工具 ----------------
 
     def file_symbols(self, path: str, limit: int = 200, root: str | None = None) -> dict:

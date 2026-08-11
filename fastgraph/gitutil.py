@@ -43,19 +43,23 @@ def changed_files(root: Path) -> dict:
             continue
         status = line[:2].strip()
         path = line[3:].strip()
-        if path and not path.startswith("."):
-            try:
-                rel = (base / path).resolve().relative_to(base.resolve()).as_posix()
-            except (ValueError, OSError):
-                continue
-            if status == "??":
-                changes[rel] = "added"
-            elif status.startswith("D"):
-                changes[rel] = "deleted"
-            elif status[0] == "R":
-                changes[rel] = "renamed"
-            else:
-                changes[rel] = "modified"
+        # Skip the tool's own index dir even in subdirectories
+        # (`.fastgraph/index.sqlite` under any project folder): `git status`
+        # reports it as untracked noise on every call.
+        if not path or path.startswith(".") or ".fastgraph" in path.split("/"):
+            continue
+        try:
+            rel = (base / path).resolve().relative_to(base.resolve()).as_posix()
+        except (ValueError, OSError):
+            continue
+        if status == "??":
+            changes[rel] = "added"
+        elif status.startswith("D"):
+            changes[rel] = "deleted"
+        elif status[0] == "R":
+            changes[rel] = "renamed"
+        else:
+            changes[rel] = "modified"
     return changes
 
 

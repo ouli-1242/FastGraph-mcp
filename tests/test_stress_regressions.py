@@ -36,6 +36,85 @@ def tmp_root(tmp_path):
     shutil.rmtree(tmp_path, ignore_errors=True)
 
 
+# ---------------- P1-0: shared-connection cursor corruption under threads ----------------
+
+
+def test_db_conn_per_thread_safe(tmp_root):
+    """A second execute on the *same* sqlite3 connection from another thread
+    corrupts an in-flight cursor iteration (wrong row counts, empty rows).
+    DB.conn must hand out a per-thread connection instead (was: one shared
+    check_same_thread=False connection -> module_cycles crashed with
+    'not enough values to unpack (expected 1, got 0)' under concurrent
+    MCP tool calls)."""
+    import sys as _sys
+
+    db = DB(tmp_root)
+    conn = db.conn
+    conn.execute("CREATE TABLE t (a TEXT, b TEXT)")
+    conn.executemany("INSERT INTO t VALUES (?, ?)", [(f"x{i}", f"y{i}") for i in range(2000)])
+    conn.commit()
+    _sys.setswitchinterval(0.0001)
+
+    errors: list[str] = []
+
+    def reader():
+        for _ in range(60):
+            try:
+                rows = list(db.conn.execute("SELECT a, b FROM t"))
+                if len(rows) != 2000:
+                    errors.append(f"row count {len(rows)} != 2000")
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"{type(e).__name__}: {e}")
+
+    def writer():
+        for _ in range(60):
+            db.conn.execute("SELECT 1")
+
+    threads = [threading.Thread(target=reader) for _ in range(4)] + \
+              [threading.Thread(target=writer) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    db.close()
+    assert errors == [], f"shared-connection corruption: {errors[:3]}"
+
+
+def test_concurrent_tools_no_crash(tmp_root):
+    """The full tool surface must survive concurrent calls from a thread pool
+    (how MCP servers dispatch parallel requests). Was: module_cycles crashed
+    with a ValueError whenever it overlapped other tools."""
+    import sys as _sys
+
+    files = {
+        "a.py": "from b import run\ndef entry():\n    return run()\n",
+        "b.py": "from a import entry\ndef run():\n    return entry()\n",
+        **{f"m{i}.py": f"def f{i}():\n    return {i}\n" for i in range(20)},
+    }
+    db, ix, tb = _build(tmp_root, files)
+    _sys.setswitchinterval(0.0001)
+
+    errors: list[str] = []
+
+    def worker():
+        for _ in range(8):
+            try:
+                tb.module_cycles()
+                tb.code_search("entry")
+                tb.find_callers("entry")
+                tb.project_overview()
+            except Exception as e:  # noqa: BLE001
+                errors.append(f"{type(e).__name__}: {e}")
+
+    threads = [threading.Thread(target=worker) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    db.close()
+    assert errors == [], f"concurrent tool calls crashed: {errors[:3]}"
+
+
 # ---------------- P1-1: concurrent refresh must not crash ----------------
 
 def test_concurrent_refresh_no_crash(tmp_root):
