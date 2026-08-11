@@ -113,6 +113,10 @@ class DB:
         conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
+        # cross-process writers (a second MCP instance, or a script + the
+        # server) wait up to 5s instead of failing instantly with
+        # "database is locked" (default busy_timeout is 0)
+        conn.execute("PRAGMA busy_timeout=5000")
         conn.executescript(SCHEMA)
         conn.commit()
         return conn

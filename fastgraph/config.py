@@ -88,6 +88,17 @@ coverage/
 .cache/
 # ---- Java ----
 .gradle/
+# ---- 敏感文件（密钥/证书/凭据，避免内容搜索泄漏）----
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*secret*.json
+*credential*.json
+service-account*.json
+id_rsa*
+id_ed25519*
 # ---- 示例：你自己项目里的第三方大库 ----
 # towxml
 """

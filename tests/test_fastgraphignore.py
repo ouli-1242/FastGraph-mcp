@@ -100,3 +100,21 @@ def test_path_glob_pattern():
     assert "src/main.js" in paths
     db.close()
     _rmtree(WORK)
+
+
+def test_sensitive_files_ignored_by_default_template():
+    """The auto-created template's sensitive-file defaults keep secret
+    material out of the index (and out of content-search snippets)."""
+    _make_project({
+        "app.py": "x = 1\n",
+        "secrets.json": '{"api_key": "sk-123"}\n',
+        "config/service-account.json": '{"private_key": "p"}\n',
+    })
+    db = DB(WORK)
+    Indexer(WORK, db).force_index()
+    paths = _paths(db)
+    assert "app.py" in paths
+    assert "secrets.json" not in paths
+    assert "config/service-account.json" not in paths
+    db.close()
+    _rmtree(WORK)
