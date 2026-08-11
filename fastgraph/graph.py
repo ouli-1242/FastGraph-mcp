@@ -638,6 +638,24 @@ def project_overview(db: DB) -> dict:
     }
 
 
+# Framework lifecycle callbacks are registered by the framework (uni-app page
+# lifecycle, Vue options API hooks) and never called by name in source code, so
+# a missing incoming call edge does NOT mean dead code. Scoped to .vue/.svelte
+# files so plain JS/TS modules keep full coverage.
+_FRAMEWORK_LIFECYCLE = {
+    # uni-app / WeChat mini-program page lifecycle
+    "onLoad", "onShow", "onHide", "onUnload", "onReady",
+    "onPullDownRefresh", "onReachBottom", "onShareAppMessage",
+    "onShareTimeline", "onPageScroll", "onTabItemTap", "onResize",
+    "onBackPress", "onNavigationBarButtonTap",
+    # Vue options API lifecycle hooks
+    "beforeCreate", "created", "beforeMount", "mounted",
+    "beforeUpdate", "updated", "beforeUnmount", "unmounted",
+    "activated", "deactivated", "errorCaptured",
+    "beforeDestroy", "destroyed", "setup",
+}
+
+
 def unused_symbols(db: DB, limit: int = 50) -> list[dict]:
     """Potentially dead code: methods/functions with no incoming call edge.
 
@@ -687,6 +705,8 @@ def unused_symbols(db: DB, limit: int = 50) -> list[dict]:
         if (fid, name) in tpl_refs:
             continue
         lp = path.lower()
+        if name in _FRAMEWORK_LIFECYCLE and lp.endswith((".vue", ".svelte")):
+            continue
         if "test" in lp or "spec" in lp or Path(path).name in _ENTRY_NAMES:
             continue
         # interface members are dispatched polymorphically, not called by name

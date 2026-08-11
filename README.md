@@ -153,7 +153,7 @@ OpenCode（`opencode.json`）：
 | 改代码前：影响面 | `impact_analysis(symbol, max_depth?)` | 直接调用者(HIGH)/间接(MEDIUM)/测试单列 |
 | 改名之前：风险评估 | `rename_impact(symbol)` | 全部定义 + 引用点，HIGH/MEDIUM/LOW 分级 |
 | 改 import 前 | `file_deps(path)` | import 了什么（内部 `imports` / 外部 `external_imports` 分开）、被谁 import |
-| 找死代码 | `unused_symbols(limit?)` | 无入边的方法/函数（排除测试、入口、接口成员、Vue 模板绑定；候选需 `find_callers` 复核） |
+| 找死代码 | `unused_symbols(limit?)` | 无入边的方法/函数（排除测试、入口、接口成员、Vue 模板绑定、uni-app/Vue 生命周期回调；候选需 `find_callers` 复核） |
 | 找核心代码 | `hot_symbols(limit?)` | 入边最多的符号 + 测试调用数拆分，回答"这个仓库的核心是什么" |
 | 找复杂文件 | `file_metrics(limit?)` | 每文件符号数/出入调用边，快速定位大而复杂的文件 |
 | 架构健康 | `module_cycles(max_cycles?)` | 文件间 import 环（强连通分量），最大的排前面 |
