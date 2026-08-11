@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from pathlib import Path
 
 SCHEMA = """
@@ -57,6 +58,26 @@ CREATE TABLE IF NOT EXISTS parse_errors (
     error  TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS template_refs (
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    name    TEXT NOT NULL,
+    PRIMARY KEY (file_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS line_content (
+    id      INTEGER PRIMARY KEY,
+    file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+    line    INTEGER NOT NULL,
+    kind    TEXT NOT NULL,
+    text    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lc_file ON line_content(file_id);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_symbols USING fts5(
     name, qualified_name, doc, kind, signature,
     file_path
@@ -70,18 +91,61 @@ class DB:
         self.index_dir = self.root / ".fastgraph"
         self.index_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.index_dir / "index.sqlite"
-        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA synchronous=NORMAL")
-        self.conn.execute("PRAGMA foreign_keys=ON")
+        self._local = threading.local()
+        self._all_conns: list[sqlite3.Connection] = []
+        conn = self._new_conn()
+        self._local.conn = conn
+        self._all_conns.append(conn)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA foreign_keys=ON")
         self._migrate_schema()
-        self.conn.executescript(SCHEMA)
-        self.conn.commit()
+        conn.executescript(SCHEMA)
+        conn.commit()
         self._heal_fts()
-        self.conn.commit()
+        conn.commit()
+
+    def _new_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.executescript(SCHEMA)
+        conn.commit()
+        return conn
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """Per-thread connection (MCP servers dispatch tool calls on a thread
+        pool; a single shared sqlite3 connection is not safe there — a second
+        execute can corrupt an in-flight cursor iteration, yielding wrong row
+        counts or empty rows). All connections share the same WAL database."""
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            c = self._new_conn()
+            self._local.conn = c
+            self._all_conns.append(c)
+        return c
 
     def close(self):
-        self.conn.close()
+        for c in self._all_conns:
+            try:
+                c.close()
+            except Exception:
+                pass
+        self._all_conns.clear()
+
+    # ---------------- meta ----------------
+
+    def get_meta(self, key: str) -> str | None:
+        r = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return r[0] if r else None
+
+    def set_meta(self, key: str, value: str):
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
 
     # ---------------- schema migration ----------------
 
@@ -191,6 +255,23 @@ class DB:
             self.conn.executemany(
                 "INSERT INTO relations (source_id, target, rtype, line) VALUES (?,?,?,?)",
                 rows,
+            )
+
+    def replace_file_template_refs(self, file_id: int, names: list[str]):
+        self.conn.execute("DELETE FROM template_refs WHERE file_id=?", (file_id,))
+        if names:
+            self.conn.executemany(
+                "INSERT OR IGNORE INTO template_refs (file_id, name) VALUES (?, ?)",
+                [(file_id, n) for n in names],
+            )
+
+    def replace_file_line_content(self, file_id: int, rows: list[tuple[int, str, str]]):
+        """rows: (line, kind, text)"""
+        self.conn.execute("DELETE FROM line_content WHERE file_id=?", (file_id,))
+        if rows:
+            self.conn.executemany(
+                "INSERT INTO line_content (file_id, line, kind, text) VALUES (?,?,?,?)",
+                [(file_id, ln, kind, txt) for ln, kind, txt in rows],
             )
 
     def symbol_name_to_id(self, file_id: int) -> dict:

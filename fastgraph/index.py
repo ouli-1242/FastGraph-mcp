@@ -30,6 +30,17 @@ _EXT_LANG = {
 
 MAX_PARSE_WORKERS = min(8, (os.cpu_count() or 2))
 
+# Bump when the index format or parser output changes meaningfully (e.g.
+# signatures now embed base-class info): refresh() detects a mismatch and
+# rebuilds the index once, so upgraded servers don't serve stale shapes.
+# "3": member-candidate plausibility check (same-file/imported owner) now
+# rejects misresolved collection calls like `rows.add()`; v2 indexes have
+# those edges already resolved, and _resolve_all only re-evaluates
+# unresolved edges, so a rebuild is required to invalidate them.
+# "4": new tables template_refs / line_content (schema change) + vue template
+# refs and content lines are only collected at parse time.
+INDEX_VERSION = "4"
+
 # Guard against accidentally walking a huge, unindexed directory (e.g. an
 # unactivated default root like a user's home folder): stop once this many
 # entries were checked. refresh() reports `skipped` so tools can hint at
@@ -68,6 +79,17 @@ class Indexer:
         start = time.perf_counter()
         stats = IndexStats()
         cached = self.db.file_map()
+
+        # Index-format/parser-output upgrade: rebuild once, then carry on with
+        # the normal incremental scan (cached is now empty, so every file gets
+        # re-parsed in the same pass).
+        if self.db.get_meta("index_version") != INDEX_VERSION:
+            for rel in cached:
+                self.db.delete_file(rel)
+            self.db.commit()
+            cached = {}
+            self.db.set_meta("index_version", INDEX_VERSION)
+            self.db.commit()
 
         to_parse: list[tuple[str, Path]] = []
         seen: set[str] = set()
@@ -268,7 +290,16 @@ def _resolve_all(db: DB) -> None:
         if rtype == "calls":
             candidates = _candidates_for_target(db, sym_files, target)
             if len(candidates) == 1:
-                db.apply_resolution(rel_id, candidates[0])
+                # `rows.add(...)`/`noteList.add(...)` produce bare `add` (and
+                # dotted `rows.add`) edges; when a project has exactly one
+                # symbol named `add`, the unique-name resolution links every
+                # collection call to it, polluting find_callers with dozens
+                # of unrelated callers. Member targets must live in the same
+                # file as the caller or be imported by it.
+                if _member_target_plausible(
+                    db, candidates[0], source_id, import_text_by_file, caller_file
+                ):
+                    db.apply_resolution(rel_id, candidates[0])
             elif len(candidates) > 1:
                 src_fid = caller_file.get(source_id)
                 imports = import_text_by_file.get(src_fid or -1, "")
@@ -317,6 +348,39 @@ def _resolve_all(db: DB) -> None:
             ]
             if len(candidates) == 1:
                 db.apply_resolution(rel_id, candidates[0])
+
+
+def _member_target_plausible(
+    db: DB,
+    cid: int,
+    source_id: int,
+    import_text_by_file: dict[int, str],
+    caller_file: dict[int, int],
+) -> bool:
+    """Reject resolving a *member* candidate (qualified name contains ``.``)
+    when the caller neither lives in the same file nor imports the owner
+    class/module. Module-level and class-level (bare qname) targets are
+    always plausible. See the `rows.add()` -> sole `add` symbol misresolution
+    that polluted find_callers/impact_analysis."""
+    row = db.conn.execute("SELECT qualified_name FROM symbols WHERE id = ?", (cid,)).fetchone()
+    if not row:
+        return True
+    qname = row[0]
+    if "." not in qname:
+        return True
+    owner = qname.rsplit(".", 1)[0]
+    owner_fid: int | None = None
+    r = db.conn.execute(
+        "SELECT file_id FROM symbols WHERE qualified_name = ? LIMIT 1", (owner,)
+    ).fetchone()
+    if r:
+        owner_fid = r[0]
+    src_fid = caller_file.get(source_id)
+    if src_fid is not None and owner_fid is not None and src_fid == owner_fid:
+        return True  # same-file member call (e.g. `this.add(...)` / `add(...)`)
+    if src_fid is not None:
+        return owner.lower() in import_text_by_file.get(src_fid, "")
+    return True
 
 
 def _candidates_for_target(db: DB, sym_files: dict[int, tuple], target: str) -> list[int]:
