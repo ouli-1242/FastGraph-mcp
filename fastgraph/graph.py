@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections import deque
 from pathlib import Path
@@ -434,12 +435,66 @@ def file_symbols(db: DB, path: str, limit: int = 200) -> list[dict]:
     ]
 
 
+_alias_cache: dict[Path, dict[str, str]] = {}
+
+
+def _alias_prefixes(db: DB) -> dict[str, str]:
+    """Import alias prefix → root-relative directory.
+
+    Sources (first match per alias wins): tsconfig/jsconfig compilerOptions
+    paths, vite resolve.alias, and the uni-app convention `@` → project root
+    (only when pages.json exists). Cached per project root; never guesses when
+    no config exists, so projects without aliases are unaffected.
+    """
+    root = db.root
+    if root in _alias_cache:
+        return _alias_cache[root]
+    m: dict[str, str] = {}
+    for cfg_name in ("jsconfig.json", "tsconfig.json"):
+        cfg = root / cfg_name
+        if not cfg.is_file():
+            continue
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            continue
+        paths = (data.get("compilerOptions") or {}).get("paths") or {}
+        for key, targets in paths.items():
+            if not targets or not isinstance(targets, list):
+                continue
+            alias = key.split("/*")[0].rstrip("*")
+            tgt = str(targets[0]).split("/*")[0].rstrip("*")
+            if alias and tgt:
+                m[alias] = tgt.strip("./")
+    for vname in ("vite.config.js", "vite.config.ts", "vite.config.mjs"):
+        vcfg = root / vname
+        if not vcfg.is_file():
+            continue
+        txt = vcfg.read_text(encoding="utf-8", errors="replace")
+        for mm in re.finditer(r"alias\s*:\s*\{([\s\S]*?)\}", txt):
+            for am in re.finditer(
+                r"['\"]([@\w/-]+)['\"]\s*:\s*['\"]?([^'\"\s,}]+)", mm.group(1)
+            ):
+                m[am.group(1)] = am.group(2).strip("'\"")
+    if not any(k == "@" for k in m) and (root / "pages.json").is_file():
+        m["@"] = ""  # uni-app: @ → project root
+    _alias_cache[root] = m
+    return m
+
+
 def import_targets(db: DB, import_text: str, import_file: str) -> list[str]:
     """Guess which indexed files an import statement refers to."""
     m = _IMP_RE.search(import_text)
     if not m:
         return []
     mod = m.group(2)
+    # configured import aliases (`@/x`, tsconfig paths, vite alias): substitute
+    # the prefix before the stem matching below
+    for alias, tgt in sorted(_alias_prefixes(db).items(), key=lambda kv: -len(kv[0])):
+        if mod == alias or mod.startswith(alias + "/"):
+            rest = mod[len(alias):].lstrip("/")
+            mod = f"{tgt}/{rest}" if tgt else rest
+            break
     if mod.startswith((".", "/")):
         rel = mod[1:] if mod.startswith(".") else mod
         mod = rel.replace("/", ".")
