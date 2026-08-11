@@ -56,10 +56,40 @@ IGNORE_FILENAME = ".fastgraphignore"
 
 IGNORE_TEMPLATE = """# FastGraph 忽略规则（gitignore 风格，仅本机生效）
 # 一行一个模式：匹配目录/文件名（任意深度）或相对路径通配
-# 例如：
-#   vendor              # 忽略任何叫 vendor 的目录/文件
-#   generated/*.min.js  # 路径通配
-#   build/              # 忽略目录
+# 下面默认项已生效；删掉某行即恢复索引该目录，按需增删。
+#
+# ---- 通用 ----
+node_modules/
+dist/
+build/
+out/
+target/
+vendor/
+third_party/
+*.min.js
+*.min.css
+*.map
+# ---- Python ----
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+# ---- Node / 前端 ----
+.next/
+.nuxt/
+.svelte-kit/
+.turbo/
+coverage/
+.cache/
+# ---- Java ----
+.gradle/
+# ---- 示例：你自己项目里的第三方大库 ----
+# towxml
 """
 
 
