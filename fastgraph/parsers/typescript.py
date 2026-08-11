@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import tree_sitter_javascript
 import tree_sitter_typescript
 from tree_sitter import Language, Parser
@@ -207,22 +209,43 @@ class TSAdapter:
                     walk(c, stack + [sym])
             elif t in ("lexical_declaration", "variable_declaration"):
                 for v in node.named_children:
-                    if v.type == "variable_declarator":
-                        vname = node_text(v.child_by_field_name("name"), source, 120)
-                        value = v.child_by_field_name("value")
-                        parent = stack[-1].qualified_name if stack else None
-                        is_fn = value is not None and value.type in ("arrow_function", "function_expression")
-                        sym = SymbolInfo(
-                            name=vname, kind="function" if is_fn else "variable",
-                            qualified_name=parent + "." + vname if parent else vname,
-                            signature=f"const {vname}" + (" = (…)" if is_fn else ""),
-                            doc="",
-                            start_line=v.start_point[0] + 1, end_line=v.end_point[0] + 1,
-                            start_col=v.start_point[1], end_col=v.end_point[1],
-                            parent=parent,
-                            calls=_calls_in(value, source) if value is not None else [],
-                        )
-                        symbols.append(sym)
+                    if v.type != "variable_declarator":
+                        continue
+                    vname = node_text(v.child_by_field_name("name"), source, 120)
+                    value = v.child_by_field_name("value")
+                    parent = stack[-1].qualified_name if stack else None
+                    is_fn = value is not None and value.type in ("arrow_function", "function_expression")
+                    if re.fullmatch(r"[A-Za-z_$][\w$]*", vname) is None:
+                        # destructuring `const { a, b } = ...`: no meaningful
+                        # symbol name — fold any calls into the enclosing symbol
+                        if stack and value is not None:
+                            stack[-1].calls.extend(_calls_in(value, source))
+                        continue
+                    if (
+                        stack
+                        and not is_fn
+                        and stack[-1].kind in ("function", "method", "constructor")
+                    ):
+                        # inner local inside a method/function body (e.g.
+                        # `const res = getDB()`): implementation detail — fold
+                        # its calls into the enclosing symbol so find_callers
+                        # reports the method, not a noisy `fn.res` variable
+                        # node. Class/namespace members are kept (they are part
+                        # of the type's surface, e.g. `NS.v`).
+                        if value is not None:
+                            stack[-1].calls.extend(_calls_in(value, source))
+                        continue
+                    sym = SymbolInfo(
+                        name=vname, kind="function" if is_fn else "variable",
+                        qualified_name=parent + "." + vname if parent else vname,
+                        signature=f"const {vname}" + (" = (…)" if is_fn else ""),
+                        doc="",
+                        start_line=v.start_point[0] + 1, end_line=v.end_point[0] + 1,
+                        start_col=v.start_point[1], end_col=v.end_point[1],
+                        parent=parent,
+                        calls=_calls_in(value, source) if value is not None else [],
+                    )
+                    symbols.append(sym)
             else:
                 for c in node.named_children:
                     walk(c, stack)

@@ -21,7 +21,7 @@ _EXT_LANG = {
     ".py": "python",
     ".ts": "typescript", ".tsx": "tsx", ".mts": "typescript", ".cts": "typescript",
     ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
-    ".vue": "vue", ".svelte": "svelte",
+    ".vue": "vue", ".svelte": "svelte", ".wxml": "wxml",
     ".go": "go",
     ".rs": "rust",
     ".java": "java",
@@ -78,8 +78,9 @@ def _extract_content_lines(lang: str, text: str) -> list[tuple[int, str, str]]:
     for m in re.finditer(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'', text):
         ln = text.count("\n", 0, m.start()) + 1
         add(ln, "string", m.group(0))
-    # vue/svelte: template lines (script blocks blanked)
-    if lang in ("vue", "svelte"):
+    # vue/svelte/wxml: template lines (script blocks blanked for vue/svelte;
+    # wxml has no script block, so the whole file is template)
+    if lang in ("vue", "svelte", "wxml"):
         t = _SCRIPT_BLANK.sub(lambda m: "\n" * m.group(0).count("\n"), text)
         for i, line in enumerate(t.split("\n"), 1):
             s = line.strip()
@@ -96,7 +97,10 @@ def _extract_content_lines(lang: str, text: str) -> list[tuple[int, str, str]]:
 # unresolved edges, so a rebuild is required to invalidate them.
 # "4": new tables template_refs / line_content (schema change) + vue template
 # refs and content lines are only collected at parse time.
-INDEX_VERSION = "4"
+# "5": wxml page templates feed template_refs via sibling .js; TS parser folds
+# inner local variables' calls into the enclosing symbol (no more `fn.res`
+# noise in callers), and drops non-identifier destructuring names.
+INDEX_VERSION = "5"
 
 # Guard against accidentally walking a huge, unindexed directory (e.g. an
 # unactivated default root like a user's home folder): stop once this many

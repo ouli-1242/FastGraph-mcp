@@ -46,3 +46,24 @@ def test_lifecycle_callbacks_excluded_in_vue_only():
     assert "mounted" not in names
     db.close()
     _rmtree(WORK)
+
+
+def test_miniapp_page_lifecycle_excluded():
+    """WeChat miniapp page .js (sibling .wxml) and app.js keep lifecycle
+    callbacks out of unused_symbols."""
+    _rmtree(WORK)
+    (WORK / "pages/mem").mkdir(parents=True, exist_ok=True)
+    (WORK / "pages/mem/mem.js").write_text(
+        "Page({ onShow() {}, onLoad() {} });\n", encoding="utf-8"
+    )
+    (WORK / "pages/mem/mem.wxml").write_text("<view>x</view>\n", encoding="utf-8")
+    (WORK / "app.js").write_text("App({ onLaunch() {} });\n", encoding="utf-8")
+    (WORK / "app.json").write_text("{}", encoding="utf-8")
+    db = DB(WORK)
+    Indexer(WORK, db).force_index()
+    names = {u["symbol"] for u in graph.unused_symbols(db, limit=50)}
+    assert "onShow" not in names
+    assert "onLoad" not in names
+    assert "onLaunch" not in names
+    db.close()
+    _rmtree(WORK)

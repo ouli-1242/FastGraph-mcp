@@ -643,11 +643,13 @@ def project_overview(db: DB) -> dict:
 # a missing incoming call edge does NOT mean dead code. Scoped to .vue/.svelte
 # files so plain JS/TS modules keep full coverage.
 _FRAMEWORK_LIFECYCLE = {
-    # uni-app / WeChat mini-program page lifecycle
+    # uni-app / WeChat mini-program page + app lifecycle
     "onLoad", "onShow", "onHide", "onUnload", "onReady",
     "onPullDownRefresh", "onReachBottom", "onShareAppMessage",
     "onShareTimeline", "onPageScroll", "onTabItemTap", "onResize",
     "onBackPress", "onNavigationBarButtonTap",
+    "onLaunch", "onError", "onThemeChange", "onPageNotFound",
+    "onUnhandledRejection",
     # Vue options API lifecycle hooks
     "beforeCreate", "created", "beforeMount", "mounted",
     "beforeUpdate", "updated", "beforeUnmount", "unmounted",
@@ -680,10 +682,28 @@ def unused_symbols(db: DB, limit: int = 50) -> list[dict]:
     ).fetchall()
     # Vue/Svelte: methods referenced only from the template (event/prop
     # bindings) never produce call edges; exclude them per (file, name).
+    # Native miniapp pages bind handlers in a sibling .wxml — its refs are
+    # stored under the .wxml file id, so merge them onto the page .js id.
+    wxml_to_js: dict[int, int] = {}
+    for (wpath,) in db.conn.execute("SELECT path FROM files WHERE language = 'wxml'"):
+        wfid = db.get_file_id(wpath)
+        jfid = db.get_file_id(wpath[:-5] + ".js")
+        if wfid is not None and jfid is not None:
+            wxml_to_js[wfid] = jfid
     tpl_refs = {
-        (fid, name)
+        (wxml_to_js.get(fid, fid), name)
         for fid, name in db.conn.execute("SELECT file_id, name FROM template_refs")
     }
+    # miniapp page .js (has a sibling .wxml) or app.js: apply the framework
+    # lifecycle list there too; standalone .js files keep full coverage.
+    miniapp_js: set[int] = set()
+    for (wpath,) in db.conn.execute("SELECT path FROM files WHERE language = 'wxml'"):
+        jfid = db.get_file_id(wpath[:-5] + ".js")
+        if jfid is not None:
+            miniapp_js.add(jfid)
+    app_fid = db.get_file_id("app.js")
+    if app_fid is not None:
+        miniapp_js.add(app_fid)
 
     def text_referenced(name: str, qname: str) -> bool:
         for cand in {name, qname}:
@@ -705,7 +725,10 @@ def unused_symbols(db: DB, limit: int = 50) -> list[dict]:
         if (fid, name) in tpl_refs:
             continue
         lp = path.lower()
-        if name in _FRAMEWORK_LIFECYCLE and lp.endswith((".vue", ".svelte")):
+        if name in _FRAMEWORK_LIFECYCLE and (
+            lp.endswith((".vue", ".svelte"))
+            or (lp.endswith(".js") and fid in miniapp_js)
+        ):
             continue
         if "test" in lp or "spec" in lp or Path(path).name in _ENTRY_NAMES:
             continue

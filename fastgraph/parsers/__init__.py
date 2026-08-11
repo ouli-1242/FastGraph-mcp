@@ -18,6 +18,7 @@ from fastgraph.parsers import rust as _rust
 from fastgraph.parsers import java as _java
 from fastgraph.parsers import cpp as _cpp
 from fastgraph.parsers import frontend as _frontend
+from fastgraph.parsers import wxml as _wxml
 
 __all__ = [
     "available_languages",
