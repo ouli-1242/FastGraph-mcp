@@ -701,9 +701,13 @@ def unused_symbols(db: DB, limit: int = 50) -> list[dict]:
         jfid = db.get_file_id(wpath[:-5] + ".js")
         if jfid is not None:
             miniapp_js.add(jfid)
-    app_fid = db.get_file_id("app.js")
-    if app_fid is not None:
-        miniapp_js.add(app_fid)
+    # app.js lives at the project root or under miniprogram/; only consider it
+    # a miniapp root when the project actually contains .wxml templates
+    if db.conn.execute("SELECT 1 FROM files WHERE language = 'wxml' LIMIT 1").fetchone():
+        for (afid,) in db.conn.execute(
+            "SELECT id FROM files WHERE path = 'app.js' OR path LIKE '%/app.js'"
+        ):
+            miniapp_js.add(afid)
 
     def text_referenced(name: str, qname: str) -> bool:
         for cand in {name, qname}:
