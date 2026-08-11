@@ -95,8 +95,9 @@ class Toolbox:
         if stats.skipped:
             out["skipped"] = True
             out["hint"] = (
-                "directory too large to scan; call activate_project(root=...) "
-                "with the actual project folder"
+                "auto-detected root is the user home dir (or too large to "
+                "scan); call activate_project(root=...) with the actual "
+                "project folder"
             )
         return out
 

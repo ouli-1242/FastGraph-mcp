@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from fastgraph.config import DEFAULT_EXCLUDES, MAX_FILE_SIZE
+from fastgraph.config import DEFAULT_EXCLUDES, MAX_FILE_SIZE, user_home
 from fastgraph.db import DB
 from fastgraph import graph
 from fastgraph.parsers.base import SymbolInfo
@@ -135,6 +135,16 @@ class Indexer:
     def _refresh(self) -> IndexStats:
         start = time.perf_counter()
         stats = IndexStats()
+
+        # Desktop/Cursor may launch the stdio server from a fixed cwd (e.g.
+        # System32); auto-detection then falls back to the user home. The home
+        # dir is never the intended project — bail fast and let tools hint at
+        # activate_project() instead of scanning it for minutes.
+        if self.root == user_home():
+            stats.skipped = True
+            self._walk_skipped = True
+            return stats
+
         cached = self.db.file_map()
 
         # Index-format/parser-output upgrade: rebuild once, then carry on with
