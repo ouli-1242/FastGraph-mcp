@@ -451,6 +451,14 @@ def _member_target_plausible(
     src_fid = caller_file.get(source_id)
     if src_fid is not None and owner_fid is not None and src_fid == owner_fid:
         return True  # same-file member call (e.g. `this.add(...)` / `add(...)`)
+    if src_fid is not None and owner_fid is not None:
+        # Java/C#: same-package classes are visible without an import
+        # statement — the import-text check below would wrongly reject
+        # legitimate cross-file member calls inside one package.
+        src_dir = (db.file_path(src_fid) or "").rsplit("/", 1)[0]
+        own_dir = (db.file_path(owner_fid) or "").rsplit("/", 1)[0]
+        if src_dir and src_dir == own_dir:
+            return True
     if src_fid is not None:
         return owner.lower() in import_text_by_file.get(src_fid, "")
     return True

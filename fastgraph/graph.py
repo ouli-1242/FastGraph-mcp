@@ -142,8 +142,9 @@ def find_callers(db: DB, name: str, limit: int = 30, depth: int = 1) -> list[dic
     roots = find_symbols(db, name)
     if not roots:
         return []
+    root_ids, member_ids = _expand_container_roots(db, roots)
     seen: set[int] = set()
-    frontier = _symbol_ids(roots)
+    frontier = list(root_ids)
     level = 0
     while frontier and level < depth:
         nxt: list[int] = []
@@ -154,7 +155,7 @@ def find_callers(db: DB, name: str, limit: int = 30, depth: int = 1) -> list[dic
                     nxt.append(c)
         frontier = nxt
         level += 1
-    out = [symbol_by_id(db, s) for s in seen if s not in _symbol_ids(roots)]
+    out = [symbol_by_id(db, s) for s in seen if s not in root_ids and s not in member_ids]
     return [o for o in out if o][:limit]
 
 
@@ -162,11 +163,39 @@ def _symbol_ids(rows: list[dict]) -> set[int]:
     return {r["id"] for r in rows}
 
 
+_CONTAINER_KINDS = {"class", "interface", "struct", "enum", "impl"}
+
+
+def _expand_container_roots(db: DB, rows: list[dict]) -> tuple[set[int], set[int]]:
+    """Return (root_ids, member_ids).
+
+    For container roots (class/interface/struct/enum/impl), member symbols are
+    added to the root set so class-level queries aggregate member edges
+    (``find_callers("Greeter")`` == callers of Greeter's methods). member_ids
+    is returned so callers can exclude the class's own members from results.
+    """
+    root_ids: set[int] = set()
+    member_ids: set[int] = set()
+    for r in rows:
+        root_ids.add(r["id"])
+        if r.get("kind") not in _CONTAINER_KINDS:
+            continue
+        qname = r.get("qualified_name") or ""
+        if not qname:
+            continue
+        for (mid,) in db.conn.execute(
+            "SELECT id FROM symbols WHERE qualified_name LIKE ?", (qname + ".%",)
+        ):
+            if mid != r["id"]:
+                member_ids.add(mid)
+    return root_ids | member_ids, member_ids
+
+
 def find_callees(db: DB, name: str, limit: int = 50, depth: int = 1) -> list[dict]:
     roots = find_symbols(db, name)
     if not roots:
         return []
-    root_ids = _symbol_ids(roots)
+    root_ids, member_ids = _expand_container_roots(db, roots)
     seen: set[int] = set()
     frontier = list(root_ids)
     level = 0
@@ -179,7 +208,8 @@ def find_callees(db: DB, name: str, limit: int = 50, depth: int = 1) -> list[dic
                     nxt.append(c)
         frontier = nxt
         level += 1
-    return [o for o in (symbol_by_id(db, s) for s in seen) if o][:limit]
+    out = [symbol_by_id(db, s) for s in seen if s not in member_ids]
+    return [o for o in out if o][:limit]
 
 
 def _callers_with_class(db: DB, sid: int) -> list[int]:
@@ -237,16 +267,8 @@ def path_between(db: DB, from_name: str, to_name: str, max_depth: int = 8) -> li
     tgt = find_symbols(db, to_name)
     if not src or not tgt:
         return None
-    src_ids = _symbol_ids(src)
-    # if `from_name` is a class, count its members as valid starting points
-    member_ids = {
-        r[0]
-        for r in db.conn.execute(
-            "SELECT s.id FROM symbols s WHERE s.name = ? OR s.qualified_name LIKE ?",
-            (from_name, from_name + ".%"),
-        )
-    }
-    src_ids |= member_ids
+    # if `from_name` is a class, its members are valid starting points too
+    src_ids, _member_ids = _expand_container_roots(db, src)
     tgt_ids = _symbol_ids(tgt)
     # multi-source BFS from targets upward, tracking parents
     parent: dict[int, int] = {}
@@ -284,7 +306,7 @@ def impact_analysis(db: DB, name: str, max_depth: int = 3, limit: int = 50) -> d
     roots = find_symbols(db, name)
     if not roots:
         return {"symbol": name, "error": "not_found", "impact": {"HIGH": [], "MEDIUM": []}, "tests": []}
-    root_ids = {r["id"] for r in roots}
+    root_ids, member_ids = _expand_container_roots(db, roots)
 
     buckets: dict[str, list[dict]] = {"HIGH": [], "MEDIUM": []}
     seen: set[int] = set()
@@ -293,7 +315,7 @@ def impact_analysis(db: DB, name: str, max_depth: int = 3, limit: int = 50) -> d
         nxt: list[int] = []
         for sid in frontier:
             for c in _callers_with_class(db, sid):
-                if c in seen or c in root_ids:
+                if c in seen or c in root_ids or c in member_ids:
                     continue
                 seen.add(c)
                 info = symbol_by_id(db, c)
