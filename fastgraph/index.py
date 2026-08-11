@@ -237,6 +237,9 @@ class Indexer:
             fid,
             [{"text": i.text, "kind": i.kind, "line": i.line} for i in result.imports],
         )
+        self.db.replace_file_template_refs(
+            fid, getattr(result, "template_refs", None) or []
+        )
         self.db.register_fts(fid, rel, symbols)
 
         rows: list[tuple] = []

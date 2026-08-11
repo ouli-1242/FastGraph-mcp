@@ -16,6 +16,45 @@ from fastgraph.parsers.typescript import TSAdapter
 _SCRIPT_RE = re.compile(r"<script\b([^>]*)>([\s\S]*?)</script\s*>", re.IGNORECASE)
 _LANG_ATTR = re.compile(r'lang\s*=\s*["\']?(tsx|ts|js|jsx)["\' ]', re.IGNORECASE)
 
+_TEMPLATE_EXPR_RE = re.compile(
+    r"""\{\{\s*([^{}]+?)\s*\}\}
+    |@[A-Za-z0-9_.-]+\s*=\s*"([^"]*)"
+    |:[A-Za-z0-9_.-]+\s*=\s*"([^"]*)"
+    |v-on:[A-Za-z0-9_.-]+\s*=\s*"([^"]*)"
+    |v-bind:[A-Za-z0-9_.-]+\s*=\s*"([^"]*)"
+    |v-(?:if|show|for|model|html|text)\s*=\s*"([^"]*)"
+    """,
+    re.VERBOSE,
+)
+# v-for / builtin bindings introduce these names into scope; they are loop
+# variables / keywords, not component members — excluding them keeps the
+# reference list precise (a method genuinely named `item` is a rare trade-off).
+_TMPL_SKIP = {
+    "true", "false", "null", "undefined", "this",
+    "event", "$event", "item", "index", "key", "value",
+}
+
+
+def _template_text(source_text: str) -> str:
+    """Blank every <script> block (newlines preserved) so only the template
+    (and style) content remains — identifiers are extracted from it."""
+    return _SCRIPT_RE.sub(lambda m: "\n" * m.group(0).count("\n"), source_text)
+
+
+def _template_refs(template_text: str) -> list[str]:
+    """Identifiers referenced from Vue/Svelte template expressions.
+
+    Covers mustache interpolation, event/prop bindings (@, :, v-on, v-bind)
+    and the common directives (v-if/v-show/v-for/v-model/v-html/v-text).
+    """
+    refs: set[str] = set()
+    for m in _TEMPLATE_EXPR_RE.finditer(template_text):
+        expr = next((g for g in m.groups() if g is not None), "")
+        for ident in re.findall(r"[A-Za-z_$][\w$]*", expr):
+            if ident not in _TMPL_SKIP:
+                refs.add(ident)
+    return sorted(refs)
+
 
 class SfcAdapter:
     """Shared logic for .vue / .svelte single-file components."""
@@ -56,6 +95,7 @@ class SfcAdapter:
         adapter = self._ts if wants_ts else self._js
         result = adapter.parse(synthetic)
         result.language = self.lang
+        result.template_refs = _template_refs(_template_text(text))
         return result
 
 

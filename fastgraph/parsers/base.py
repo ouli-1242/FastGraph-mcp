@@ -46,3 +46,4 @@ class ParseResult:
     symbols: list[SymbolInfo]
     imports: list[ImportRef]
     module_doc: str = ""
+    template_refs: list[str] = field(default_factory=list)
