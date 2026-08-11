@@ -85,11 +85,17 @@ class PythonAdapter:
         imports: list[ImportRef] = []
         module_doc = ""
 
-        def walk(node, stack: list[SymbolInfo]) -> None:
+        def walk(node, stack: list[SymbolInfo], decorated: bool = False) -> None:
             nonlocal module_doc
             t = node.type
 
-            if t == "import_statement":
+            if t == "decorated_definition":
+                # @app.get("/x") / @staticmethod / @pytest.fixture ...: the
+                # wrapped definition is registered by its decorator, never
+                # called by name — mark it so dead-code detection skips it
+                for c in node.named_children:
+                    walk(c, stack, decorated=True)
+            elif t == "import_statement":
                 imports.append(ImportRef(text=node_text(node, source, 300), line=node.start_point[0] + 1))
             elif t == "import_from_statement":
                 imports.append(ImportRef(text=node_text(node, source, 300), line=node.start_point[0] + 1))
@@ -108,6 +114,7 @@ class PythonAdapter:
                     end_col=node.end_point[1],
                     parent=parent,
                     bases=_class_bases(node, source),
+                    decorated=decorated,
                 )
                 symbols.append(sym)
                 for c in node.named_children:
@@ -131,6 +138,7 @@ class PythonAdapter:
                     end_col=node.end_point[1],
                     parent=parent,
                     calls=_parse_calls(node, source),
+                    decorated=decorated,
                 )
                 symbols.append(sym)
                 for c in node.named_children:

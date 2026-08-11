@@ -29,6 +29,8 @@ class SymbolInfo:
     parent: Optional[str] = None  # qualified parent name
     calls: list[CallRef] = field(default_factory=list)   # calls inside this symbol
     bases: list[CallRef] = field(default_factory=list)    # inherited types
+    decorated: bool = False       # registered via a decorator/annotation
+                                  # (FastAPI @app.get, Spring @GetMapping, ...)
 
 
 @dataclass

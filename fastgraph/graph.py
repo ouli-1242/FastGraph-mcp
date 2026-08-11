@@ -668,7 +668,9 @@ def unused_symbols(db: DB, limit: int = 50) -> list[dict]:
     """
     by_id: set[int] = set()
     texts: set[str] = set()
-    for r in db.conn.execute("SELECT target_id, target FROM relations WHERE rtype = 'calls'"):
+    for r in db.conn.execute(
+        "SELECT target_id, target FROM relations WHERE rtype IN ('calls', 'references')"
+    ):
         if r[0] is not None:
             by_id.add(r[0])
         if r[1]:
@@ -718,13 +720,22 @@ def unused_symbols(db: DB, limit: int = 50) -> list[dict]:
 
     out: list[dict] = []
     for r in db.conn.execute(
-        """SELECT s.id, s.name, s.kind, s.qualified_name, s.signature, s.start_line, f.path, f.id
+        """SELECT s.id, s.name, s.kind, s.qualified_name, s.signature, s.start_line,
+                  f.path, f.id, s.decorated
            FROM symbols s JOIN files f ON f.id = s.file_id
            WHERE s.kind IN ('method', 'function')
            ORDER BY f.path, s.start_line"""
     ):
-        sid, name, kind, qname, sig, line, path, fid = r
+        sid, name, kind, qname, sig, line, path, fid, decorated = r
         if sid in by_id:
+            continue
+        # constructors are called via `Class()` instantiation, never by name:
+        # Java uses kind='constructor', Python/TS name them `__init__`/`constructor`
+        if name in ("__init__", "__new__", "__post_init__", "constructor"):
+            continue
+        # decorated/annotated symbols are registered by the framework
+        # (FastAPI @app.get, Spring @GetMapping, pytest @fixture, ...)
+        if decorated:
             continue
         if (fid, name) in tpl_refs:
             continue

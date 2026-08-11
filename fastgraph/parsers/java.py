@@ -43,6 +43,22 @@ def _java_calls(node, source: bytes) -> list[CallRef]:
     return calls
 
 
+def _has_annotation(node) -> bool:
+    """True when a Java declaration carries an annotation (@GetMapping, ...).
+
+    Annotations live inside the `modifiers` child of a declaration; annotated
+    methods are registered by the framework (Spring endpoints etc.), so
+    dead-code detection must not report them.
+    """
+    for c in node.named_children:
+        if c.type == "annotation":
+            return True
+        if c.type == "modifiers":
+            if any(x.type == "annotation" for x in c.named_children):
+                return True
+    return False
+
+
 class JavaAdapter:
     lang = "java"
     exts = (".java",)
@@ -108,6 +124,7 @@ class JavaAdapter:
                     doc="", start_line=node.start_point[0] + 1, end_line=node.end_point[0] + 1,
                     start_col=node.start_point[1], end_col=node.end_point[1],
                     parent=parent, calls=_java_calls(node, source),
+                    decorated=_has_annotation(node),
                 )
                 symbols.append(sym)
             elif t == "interface_declaration":

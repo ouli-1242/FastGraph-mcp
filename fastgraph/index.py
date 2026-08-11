@@ -100,7 +100,10 @@ def _extract_content_lines(lang: str, text: str) -> list[tuple[int, str, str]]:
 # "5": wxml page templates feed template_refs via sibling .js; TS parser folds
 # inner local variables' calls into the enclosing symbol (no more `fn.res`
 # noise in callers), and drops non-identifier destructuring names.
-INDEX_VERSION = "5"
+# "6": symbols.decorated column + decorated/annotation-aware dead-code
+# detection (FastAPI @app.get, Spring @GetMapping, ...); 'references' rtype
+# resolved so Depends(get_db) counts as usage.
+INDEX_VERSION = "6"
 
 # Guard against accidentally walking a huge, unindexed directory (e.g. an
 # unactivated default root like a user's home folder): stop once this many
@@ -299,6 +302,7 @@ class Indexer:
                 "end_line": s.end_line,
                 "start_col": s.start_col,
                 "end_col": s.end_col,
+                "decorated": s.decorated,
             }
             for s in result.symbols
         ]
@@ -345,7 +349,8 @@ def _resolve_all(db: DB) -> None:
       - dotted target (auth.login) -> match qualified_name suffix
     """
     pending = db.conn.execute(
-        "SELECT id, source_id, target, rtype FROM relations WHERE target_id IS NULL"
+        "SELECT id, source_id, target, rtype FROM relations "
+        "WHERE target_id IS NULL AND rtype IN ('calls', 'references', 'inherits')"
     ).fetchall()
     if not pending:
         return
@@ -364,7 +369,7 @@ def _resolve_all(db: DB) -> None:
     }
 
     for rel_id, source_id, target, rtype in pending:
-        if rtype == "calls":
+        if rtype in ("calls", "references"):
             candidates = _candidates_for_target(db, sym_files, target)
             picked: list[int] = []
             if len(candidates) == 1:

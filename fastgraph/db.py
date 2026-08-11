@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     start_line     INTEGER NOT NULL,
     end_line       INTEGER NOT NULL,
     start_col      INTEGER NOT NULL DEFAULT 0,
-    end_col        INTEGER NOT NULL DEFAULT 0
+    end_col        INTEGER NOT NULL DEFAULT 0,
+    decorated      INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_sym_name    ON symbols(name);
 CREATE INDEX IF NOT EXISTS idx_sym_qname   ON symbols(qualified_name);
@@ -165,6 +166,13 @@ class DB:
             return
         if row and "content=''" in (row[0] or ""):
             self.conn.execute("DROP TABLE fts_symbols")
+        # symbols.decorated: added for decorator/annotation-aware dead-code
+        # detection; old indexes lack the column and the INSERT would fail
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(symbols)")}
+        if "decorated" not in cols:
+            self.conn.execute(
+                "ALTER TABLE symbols ADD COLUMN decorated INTEGER NOT NULL DEFAULT 0"
+            )
 
     # ---------------- files ----------------
 
@@ -222,11 +230,13 @@ class DB:
             return
         self.conn.executemany(
             "INSERT INTO symbols (file_id, name, kind, qualified_name, signature, doc, "
-            "start_line, end_line, start_col, end_col) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "start_line, end_line, start_col, end_col, decorated) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             [
                 (
                     file_id, s["name"], s["kind"], s["qualified_name"], s["signature"],
                     s["doc"], s["start_line"], s["end_line"], s["start_col"], s["end_col"],
+                    s.get("decorated", False),
                 )
                 for s in symbols
             ],
