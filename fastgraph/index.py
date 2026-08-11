@@ -13,6 +13,7 @@ from pathlib import Path
 
 from fastgraph.config import DEFAULT_EXCLUDES, MAX_FILE_SIZE
 from fastgraph.db import DB
+from fastgraph import graph
 from fastgraph.parsers.base import SymbolInfo
 from fastgraph.parsers.registry import get_adapter
 
@@ -292,6 +293,7 @@ def _resolve_all(db: DB) -> None:
     for rel_id, source_id, target, rtype in pending:
         if rtype == "calls":
             candidates = _candidates_for_target(db, sym_files, target)
+            picked: list[int] = []
             if len(candidates) == 1:
                 # `rows.add(...)`/`noteList.add(...)` produce bare `add` (and
                 # dotted `rows.add`) edges; when a project has exactly one
@@ -343,6 +345,15 @@ def _resolve_all(db: DB) -> None:
                         picked = exact
                 if len(picked) == 1:
                     db.apply_resolution(rel_id, picked[0])
+            if not picked and "." not in target:
+                # `import { logout as apiLogout } from '../api/admin'` +
+                # `apiLogout()`: the bare edge names the *local* binding, so it
+                # resolves to the exported symbol `logout` via the import map.
+                alias = _resolve_via_alias(
+                    db, source_id, target, import_text_by_file, sym_files, caller_file
+                )
+                if alias is not None:
+                    db.apply_resolution(rel_id, alias)
         elif rtype == "inherits":
             # bases are class names: unique-name match, else skip (heuristic noise)
             candidates = [
@@ -384,6 +395,79 @@ def _member_target_plausible(
     if src_fid is not None:
         return owner.lower() in import_text_by_file.get(src_fid, "")
     return True
+
+
+_ALIAS_NAMED_RE = re.compile(r"import\s*\{([^}]*)\}\s*from\s*['\"]([^'\"]+)['\"]")
+_ALIAS_BARE_RE = re.compile(r"import\s+(\w+)\s+as\s+(\w+)\s+from\s*['\"]([^'\"]+)['\"]")
+_ALIAS_NS_RE = re.compile(r"import\s+\*\s+as\s+(\w+)\s+from\s*['\"]([^'\"]+)['\"]")
+
+
+def _resolve_via_alias(
+    db: DB,
+    source_id: int,
+    target: str,
+    import_text_by_file: dict[int, str],
+    sym_files: dict[int, tuple],
+    caller_file: dict[int, int],
+) -> int | None:
+    """Resolve a bare call target through import aliasing in the caller file.
+
+    `import { logout as apiLogout } from '../api/admin'` + `apiLogout()` →
+    the symbol `logout` in the resolved module. Also covers `import x as y`
+    (Python) and `import * as ns` (dotted targets). Case-insensitive: the
+    import text is lowercased when grouped.
+    """
+    src_fid = caller_file.get(source_id)
+    if src_fid is None:
+        return None
+    src_path = db.file_path(src_fid)
+    if not src_path:
+        return None
+    imp_text = import_text_by_file.get(src_fid, "")
+    if not imp_text:
+        return None
+
+    def resolve_export(mod_spec: str, export: str) -> int | None:
+        for cand in graph.import_targets(
+            db, f"import {{ {export} }} from '{mod_spec}'", src_path
+        ):
+            rows = db.conn.execute(
+                "SELECT id FROM symbols "
+                "WHERE file_id = (SELECT id FROM files WHERE path = ?) "
+                "AND LOWER(name) = LOWER(?)",
+                (cand, export),
+            ).fetchall()
+            if len(rows) == 1:
+                return rows[0][0]
+        return None
+
+    tgt = target.lower()
+    for m in _ALIAS_NAMED_RE.finditer(imp_text):
+        for part in m.group(1).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if " as " in part:
+                orig, local = (p.strip() for p in part.split(" as ", 1))
+            else:
+                orig = local = part
+            if local.lower() == tgt:
+                hit = resolve_export(m.group(2), orig)
+                if hit is not None:
+                    return hit
+    for m in _ALIAS_BARE_RE.finditer(imp_text):
+        if m.group(2).lower() == tgt:
+            hit = resolve_export(m.group(3), m.group(1))
+            if hit is not None:
+                return hit
+    for m in _ALIAS_NS_RE.finditer(imp_text):
+        ns, mod_spec = m.group(1), m.group(2)
+        if tgt.startswith(ns.lower() + "."):
+            export = target[len(ns) + 1:]
+            hit = resolve_export(mod_spec, export)
+            if hit is not None:
+                return hit
+    return None
 
 
 def _candidates_for_target(db: DB, sym_files: dict[int, tuple], target: str) -> list[int]:
