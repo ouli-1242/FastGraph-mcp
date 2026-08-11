@@ -31,6 +31,62 @@ _EXT_LANG = {
 
 MAX_PARSE_WORKERS = min(8, (os.cpu_count() or 2))
 
+_SCRIPT_BLANK = re.compile(r"<script\b[^>]*>[\s\S]*?</script\s*>", re.IGNORECASE)
+
+_LINE_COMMENT_MARK = {
+    "python": "#",
+    "typescript": "//", "tsx": "//", "javascript": "//",
+    "java": "//", "cpp": "//",
+    "go": "//", "rust": "//",
+}
+
+
+def _extract_content_lines(lang: str, text: str) -> list[tuple[int, str, str]]:
+    """Collect (1-based line, kind, text) for content search.
+
+    kinds: comment (line + block), string (incl. triple-quoted spans),
+    template (vue/svelte non-script lines). Text capped at 200 chars. This is
+    deliberately lossy — identifiers are already covered by the symbol index.
+    """
+    out: list[tuple[int, str, str]] = []
+    lines = text.split("\n")
+
+    def add(ln: int, kind: str, content: str):
+        c = content.strip().strip("\"'")
+        if c and len(c) <= 200:
+            out.append((ln, kind, c))
+
+    # block comments: emit every span line
+    for m in re.finditer(r"/\*[\s\S]*?\*/", text):
+        start = text.count("\n", 0, m.start())
+        for i, sub in enumerate(m.group(0).split("\n")):
+            add(start + i + 1, "comment", sub)
+    # triple-quoted python strings
+    for m in re.finditer(r'"""([\s\S]*?)"""|\'\'\'([\s\S]*?)\'\'\'', text):
+        start = text.count("\n", 0, m.start())
+        s = next((g for g in m.groups() if g is not None), "")
+        for i, sub in enumerate(s.split("\n")):
+            add(start + i + 1, "string", sub)
+    # line comments + single-line string literals
+    mark = _LINE_COMMENT_MARK.get(lang)
+    for i, line in enumerate(lines, 1):
+        stripped = line.lstrip()
+        if mark and stripped.startswith(mark):
+            add(i, "comment", line[line.find(mark):])
+        if lang in ("vue", "svelte") and stripped.startswith("<!--"):
+            add(i, "comment", line)
+    for m in re.finditer(r'"(?:[^"\\\n]|\\.)*"|\'(?:[^\'\\\n]|\\.)*\'', text):
+        ln = text.count("\n", 0, m.start()) + 1
+        add(ln, "string", m.group(0))
+    # vue/svelte: template lines (script blocks blanked)
+    if lang in ("vue", "svelte"):
+        t = _SCRIPT_BLANK.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+        for i, line in enumerate(t.split("\n"), 1):
+            s = line.strip()
+            if s and not s.startswith("<") and not s.startswith("</"):
+                add(i, "template", s)
+    return out
+
 # Bump when the index format or parser output changes meaningfully (e.g.
 # signatures now embed base-class info): refresh() detects a mismatch and
 # rebuilds the index once, so upgraded servers don't serve stale shapes.
@@ -125,7 +181,7 @@ class Indexer:
                     self.db.set_parse_error(rel, "parse failed")
                     continue
                 self.db.clear_parse_error(rel)
-                self._store_file(rel, st, hash_, result)
+                self._store_file(rel, st, hash_, result, source)
                 stats.parsed += 1
 
         if stats.parsed or stats.deleted:
@@ -204,7 +260,7 @@ class Indexer:
             result = None
         return rel, st, hash_, result, source
 
-    def _store_file(self, rel: str, st, hash_: str, result) -> None:
+    def _store_file(self, rel: str, st, hash_: str, result, source: bytes) -> None:
         """Single-threaded DB write for one parsed file."""
         lang = result.language
         module_doc = getattr(result, "module_doc", "") or ""
@@ -240,6 +296,9 @@ class Indexer:
         )
         self.db.replace_file_template_refs(
             fid, getattr(result, "template_refs", None) or []
+        )
+        self.db.replace_file_line_content(
+            fid, _extract_content_lines(lang, source.decode("utf-8", "replace"))
         )
         self.db.register_fts(fid, rel, symbols)
 

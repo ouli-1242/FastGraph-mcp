@@ -115,9 +115,37 @@ def code_search(db: DB, query: str, limit: int = 10, kind: str | None = None) ->
         if len(results) >= limit:
             break
     if len(results) < limit and kind is None:
+        results.extend(_content_hits(db, query, limit - len(results)))
+    if len(results) < limit and kind is None:
         # import hits are kind="import" and would violate any kind filter
         results.extend(_import_hits(db, query, limit - len(results)))
     return results
+
+
+def _content_hits(db: DB, query: str, limit: int) -> list[dict]:
+    """LIKE scan over stored comment/string/template lines (CJK-safe).
+
+    Runs after symbol-level tiers: identifiers live in the symbol index, this
+    covers prose — Chinese keywords, error messages, doc comments. Each hit
+    carries a ≤80-char snippet of the matching line.
+    """
+    tokens = [t for t in _tokens(query) if len(t) >= 2][:3]
+    if not tokens:
+        return []
+    like = " AND ".join("lc.text LIKE ?" for _ in tokens)
+    rows = db.conn.execute(
+        f"""SELECT lc.line, lc.kind, lc.text, f.path
+            FROM line_content lc JOIN files f ON f.id = lc.file_id
+            WHERE {like} ORDER BY f.path, lc.line LIMIT ?""",
+        [f"%{t}%" for t in tokens] + [limit],
+    ).fetchall()
+    return [
+        {
+            "symbol": "", "kind": r[1], "qualified_name": "", "signature": "",
+            "line": r[0], "file": r[3], "match": "content", "snippet": r[2][:80],
+        }
+        for r in rows
+    ]
 
 
 def _import_hits(db: DB, query: str, limit: int) -> list[dict]:
