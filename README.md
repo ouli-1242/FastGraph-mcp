@@ -136,6 +136,33 @@ OpenCode（`opencode.json`）：
 
 打开后**每次工具响应都带 `refresh` 统计**（`scanned` / `parsed` / `deleted` / `errors` / `refresh_ms`），其中 `refresh_ms` 是每次调用前的索引增量检查耗时（查询的主要开销来源）。平时不用开，定位慢查询时再开。
 
+## 让模型主动使用（关键）
+
+MCP 工具对模型是**可选**的：不引导，模型默认用自己顺手的 grep/read——那正是 FastGraph 想替代的低效路径。三处杠杆按效力排序：
+
+**① 用户侧记忆文件（最有效）**：把下面这段粘贴进项目的 `CLAUDE.md` / `AGENTS.md` / `.cursorrules`（全局则放 `~/.claude/CLAUDE.md`）：
+
+```md
+## 代码导航：用 FastGraph MCP，不要先用 grep
+
+- 找代码在哪 / 找用法：先 `code_search`，而不是 grep（grep 分不清定义与调用点）
+- 打开不熟悉的文件前：先 `file_symbols(path)` 看结构，再决定读哪段
+- 回答"谁调用了 X / X 在哪被用到"：用 `find_callers`；结果为空但带 `unresolved_incoming>0` 时表示有调用者只是没解析出来，不能当"无人使用"
+- 修改任何函数/类之前：先 `impact_analysis(symbol)` 看影响面
+- 改 import / 依赖关系前：`file_deps(path)`；查架构健康：`module_cycles()`
+- 只读一个符号：`symbol_body(name)`；整文件或非代码文本才用 `read_file`
+- 一轮修改结束后：`changed_context()` 复查波及范围（跨分支对比传 `base="main"`）
+- 进陌生仓库：先 `project_overview()` 再导航
+```
+
+**② 服务端 instructions（已内置）**：`server.py` 的 `_INSTRUCTIONS` 就是上面这套触发式决策表，Claude Code / OpenCode 会在会话注入；不注入 instructions 的客户端用 ① 补。
+
+**③ 工具描述本身（已内置）**：每个工具的 description 以"什么时候用"开头（`Use INSTEAD of grep/glob…`、`Run BEFORE editing…`、`Run AFTER finishing edits…`），并在语义重叠的工具间互相指路（`find_callers ↔ impact_analysis`、`file_deps → module_cycles`）。
+
+另外两个不占工具位的入口：MCP **resource** `fastgraph://overview`（客户端可直接拉取项目地图），MCP **prompt** `fastgraph-workflow`（把决策表显式载入对话，适合 instructions 不生效的客户端）。
+
+> 为什么只有 13 个工具：工具定义随每次请求重发，多一个就多一分 context。13 个已覆盖定位/调用图/依赖/变更，宁少勿滥。
+
 ## 工具速查
 
 固定 **13 个工具**，单独使用与配合其他代码工具时都是同一套表面——不做环境探测、不需要切换、也没有隐藏档位：
@@ -150,10 +177,10 @@ OpenCode（`opencode.json`）：
 | 读文件 | `read_file(path, start_line?, end_line?)` | 读项目内**任意文本文件**（源码/文档/配置皆可）或其行区间；行号 1-based；不给 `end_line` 时默认返回前 400 行（`total_lines`/`truncated` 说明是否还有更多）；根目录外、dot 段、`.fastgraphignore` 命中的路径**不可读**（与索引可见性一致，密钥类文件读不到）；源码文件另带 `indexed: true` |
 | 只读一个符号 | `symbol_body(symbol, max_lines?)` | 只返回该符号的源码，比读整文件更省更准 |
 | 谁在调用 / 它调用谁 | `find_callers(symbol, depth?)` / `find_callees(symbol, depth?)` | `depth>=2` 返回多级**传递**调用者 / 完整下游调用树（每条带 `depth`/`via`） |
-| 改代码前：影响面 | `impact_analysis(symbol, max_depth?)` | 直接调用者(HIGH)/间接(MEDIUM)/测试单列 |
+| 改代码前：影响面 | `impact_analysis(symbol, max_depth?)` | 直接调用者(HIGH)/间接(MEDIUM)/测试单列/**import 级受影响文件**(`import_dependents`) |
 | 改 import 前 | `file_deps(path)` | import 了什么（内部 `imports` / 外部 `external_imports` 分开）、被谁 import |
 | 架构健康 | `module_cycles(max_cycles?)` | 文件间 import 环（强连通分量），最大的排前面 |
-| 刚改完代码 | `changed_context()` | git diff → 变更文件/符号 → 受影响的调用者；**非 git 项目**自动退化为"自上次调用以来被重解析的文件"（返回 `source: "mtime"`） |
+| 刚改完代码 | `changed_context(base?)` | git diff → 变更文件/符号 → 受影响的调用者；传 `base`（如 `"main"`/`"HEAD~3"`）可看整个分支的足迹；**非 git 项目**自动退化为"自上次调用以来被重解析的文件"（返回 `source: "mtime"`） |
 
 > **为什么只有 13 个**：每个工具定义都会随**每次请求**重新发送，所以一个工具必须能回答"LSP 类工具答不出、或答起来很贵"的事才值得占位。`trace_path` / `rename_impact` / `type_hierarchy` / `unused_symbols` / `hot_symbols` / `file_metrics` / `get_status` **仍然完整实现、测试覆盖，但不对外暴露**（保留为内部 Python API，随时可一行加回）。逐条理由写在 `fastgraph/server.py` 的 `UNEXPOSED` 注释里。
 
@@ -190,7 +217,10 @@ FastGraph **不做** edit / rename / refactor / diagnostics——那是 LSP 类�
 ## 索引机制
 
 - **懒 + 增量（无后台任务）**：每次工具调用前检查一次，mtime+size 比对，只重解析变化的文件；文件删除自动移出索引。没有定时器——不调工具索引就不动，任何保存（即使不提交 git）下次查询即反映
+- **import 解析结果物化**：索引期把每条 import 解析到的文件写入 `import_edges` 表（文件集或 tsconfig/go.mod 等构建配置变化时全量重建，纯内容修改只重算该文件自己的行），`file_deps` / `module_cycles` / `project_overview.layering` 因此是纯索引读取，不再每次查询重新解析全库 import
 - **模块级调用**：每个文件都有一个 `module` 符号，**导入期执行的调用**（`register_adapter(...)`、`app.include_router(...)`、`if __name__ == "__main__": main()`）挂在它名下，所以调用图与死代码检测不会被"装配层"代码骗过（当前覆盖 Python 与 TS/JS/Vue/Svelte；Go/Rust/Java/C++ 尚未接入）
+- **参数注解辅助调用解析**：Python/TS 显式参数类型注解（`def f(svc: UserService)`、`function f(svc: UserService)`）在解析期记录，`svc.run()` 这类接收者调用借助它连边——不做类型推断，只用显式写出的注解
+- **构建配置变更感知**：`tsconfig.json` / `go.mod` / `pages.json` / `vite.config.*` 的 mtime 指纹每次刷新比对，变化即失效别名/模块根缓存并重建 import 边——会话中途改这些文件无需重启 server
 - **首次**：调用任意工具时自动全量扫描（>2MB 文件跳过，Node 黑名单目录排除）
 - **位置**：项目 `.fastgraph/index.sqlite`（自动忽略，不污染 git）
 - **忽略规则**：`.fastgraph/.fastgraphignore`（gitignore 风格，仅本地生效，首次索引自动生成）——模板自带热门语言默认忽略项（`node_modules/`、`dist/`、`__pycache__/`、`*.min.js`、`.venv/` 等，删行即恢复索引），新增规则后下次调用自动把已索引的文件移出
