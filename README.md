@@ -14,9 +14,17 @@
 ## 安装
 
 ```bash
-cd /path/to/FastGraph-mcp
-python -m pip install .        # 日常使用（装完源码目录可删）
-python -m pip install -e ".[dev]"   # 开发者（改动即时生效）
+pip install fastgraph-mcp           # 日常使用
+pip install "fastgraph-mcp[dev]"    # 开发者
+```
+
+从源码安装：
+
+```bash
+git clone https://github.com/ouli-1242/FastGraph-mcp.git
+cd FastGraph-mcp
+python -m pip install .              # 日常使用（装完源码目录可删）
+python -m pip install -e ".[dev]"    # 开发者（改动即时生效）
 ```
 
 要求 Python ≥ 3.11。
