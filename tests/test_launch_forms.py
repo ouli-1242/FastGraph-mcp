@@ -4,9 +4,10 @@
 desktop client starts the MCP process with the project (or a subfolder of it) as
 cwd -- so any project containing a top-level `types/`, `json/`, `logging/`, ...
 breaks the interpreter before our code runs. sentry does exactly this
-(`src/sentry/types/__init__.py`). The two launch forms that survive it are the
-installed console script and `python -I -m` (isolated mode keeps cwd off the
-path), so both are exercised here from a directory that shadows `types`.
+(`src/sentry/types/__init__.py`). The forms that survive it are `python -P -m`
+(recommended: only the cwd is kept off `sys.path`), `python -I -m` (isolated, so
+`PYTHONPATH` and user site-packages go missing too) and the installed console
+script -- all three are exercised here from a directory that shadows `types`.
 """
 import json
 import shutil
@@ -53,7 +54,16 @@ def test_console_script_survives_a_stdlib_shadowing_project(tmp_path):
     assert isinstance(info, dict) and info["name"] == "fastgraph", info
 
 
-def test_isolated_dash_m_survives_a_stdlib_shadowing_project(tmp_path):
+def test_dash_P_dash_m_survives_a_stdlib_shadowing_project(tmp_path):
+    """The recommended form: `-P` only drops the cwd/script dir from sys.path."""
+    info = _handshake([sys.executable, "-P", "-m", "fastgraph"], _hostile_cwd(tmp_path))
+    assert isinstance(info, dict) and info["name"] == "fastgraph", info
+
+
+def test_isolated_dash_m_also_survives(tmp_path):
+    """`-I` fixes the shadowing too, at the price of ignoring `PYTHONPATH` and the
+    user site-packages -- so a `pip install --user` fastgraph would not be
+    importable. A documented alternative, never the default advice."""
     info = _handshake([sys.executable, "-I", "-m", "fastgraph"], _hostile_cwd(tmp_path))
     assert isinstance(info, dict) and info["name"] == "fastgraph", info
 

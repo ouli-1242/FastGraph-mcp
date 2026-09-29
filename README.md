@@ -43,7 +43,7 @@ python -m pip install -e ".[dev]"    # 开发者（改动即时生效）
 
 **1. 配置 MCP**（零配置：不写 `--root`、不写 `cwd`，打开哪个项目就索引哪个项目）
 
-> `-I` 不是可省的：`python -m x` 会把进程 cwd 排到 `sys.path` 最前面，而桌面客户端就是以你的项目目录为 cwd 启动 MCP 进程的。项目里只要有与标准库同名的顶层包/模块（`types/`、`json/`、`logging/`……），解释器在加载 `runpy` 阶段就崩了，服务器在 MCP 握手之前退出（sentry 的 `src/sentry/types/` 就会触发）。`-I` 让 cwd 不进 `sys.path`；等价的另一种写法是直接用装好的 `fastgraph` 命令。
+> `-P` 不是可省的（Python ≥ 3.11）：`python -m x` 会把进程 cwd 排到 `sys.path` 最前面，而桌面客户端就是以你的项目目录为 cwd 启动 MCP 进程的。项目里只要有与标准库同名的顶层包/模块（`types/`、`json/`、`logging/`……），解释器在加载 `runpy` 阶段就崩了，服务器在 MCP 握手之前退出（sentry 的 `src/sentry/types/` 就会触发）。`-P` 只关掉「不把 cwd/脚本目录加进 sys.path」这一件事。`python -I -m fastgraph` 或直接调用装好的 `fastgraph` 命令同样有效，但 `-I` 是隔离模式，还会忽略 `PYTHONPATH` 与用户 site-packages——用 `pip install --user`／靠 PYTHONPATH 跑源码开发版的人会因此找不到包。
 
 Claude Code（`~/.claude.json` 或项目 `.mcp.json`）：
 
@@ -52,7 +52,7 @@ Claude Code（`~/.claude.json` 或项目 `.mcp.json`）：
   "mcpServers": {
     "fastgraph": {
       "command": "python",
-      "args": ["-I", "-m", "fastgraph"]
+      "args": ["-P", "-m", "fastgraph"]
     }
   }
 }
@@ -66,7 +66,7 @@ OpenCode（`opencode.json`）：
     "fastgraph": {
       "type": "local",
       "enabled": true,
-      "command": ["python", "-I", "-m", "fastgraph"]
+      "command": ["python", "-P", "-m", "fastgraph"]
     }
   }
 }
